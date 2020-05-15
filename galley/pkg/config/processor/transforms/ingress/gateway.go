@@ -23,12 +23,14 @@ import (
 	"istio.io/api/annotation"
 	meshconfig "istio.io/api/mesh/v1alpha1"
 	"istio.io/api/networking/v1alpha3"
-	"istio.io/istio/galley/pkg/config/collection"
-	"istio.io/istio/galley/pkg/config/event"
+
 	"istio.io/istio/galley/pkg/config/processing"
-	"istio.io/istio/galley/pkg/config/processor/metadata"
-	"istio.io/istio/galley/pkg/config/resource"
+	"istio.io/istio/galley/pkg/config/processing/transformer"
 	"istio.io/istio/galley/pkg/config/synthesize"
+	"istio.io/istio/pkg/config/event"
+	"istio.io/istio/pkg/config/resource"
+	"istio.io/istio/pkg/config/schema/collection"
+	"istio.io/istio/pkg/config/schema/collections"
 )
 
 type gatewayXform struct {
@@ -39,16 +41,22 @@ type gatewayXform struct {
 
 var _ event.Transformer = &gatewayXform{}
 
-func newGatewayXform(o processing.ProcessorOptions) event.Transformer {
-	xform := &gatewayXform{}
-	xform.FnTransform = event.NewFnTransform(
-		collection.Names{metadata.K8SExtensionsV1Beta1Ingresses},
-		collection.Names{metadata.IstioNetworkingV1Alpha3Gateways},
-		nil, nil,
-		xform.handle)
-	xform.options = o
+func getGatewayXformProvider() transformer.Provider {
+	inputs := collection.NewSchemasBuilder().MustAdd(collections.K8SExtensionsV1Beta1Ingresses).Build()
+	outputs := collection.NewSchemasBuilder().MustAdd(collections.IstioNetworkingV1Alpha3Gateways).Build()
 
-	return xform
+	createFn := func(o processing.ProcessorOptions) event.Transformer {
+		xform := &gatewayXform{}
+		xform.FnTransform = event.NewFnTransform(
+			inputs,
+			outputs,
+			nil, nil,
+			xform.handle)
+		xform.options = o
+
+		return xform
+	}
+	return transformer.NewProvider(inputs, outputs, createFn)
 }
 
 func (g *gatewayXform) handle(e event.Event, h event.Handler) {
@@ -60,27 +68,27 @@ func (g *gatewayXform) handle(e event.Event, h event.Handler) {
 
 	switch e.Kind {
 	case event.Added, event.Updated:
-		if !shouldProcessIngress(g.options.MeshConfig, e.Entry) {
+		if !shouldProcessIngress(g.options.MeshConfig, e.Resource) {
 			return
 		}
 
-		gw := g.convertIngressToGateway(e.Entry)
+		gw := g.convertIngressToGateway(e.Resource)
 		evt := event.Event{
-			Kind:   e.Kind,
-			Source: metadata.IstioNetworkingV1Alpha3Gateways,
-			Entry:  gw,
+			Kind:     e.Kind,
+			Source:   collections.IstioNetworkingV1Alpha3Gateways,
+			Resource: gw,
 		}
 		h.Handle(evt)
 
 	case event.Deleted:
-		gw := g.convertIngressToGateway(e.Entry)
+		gw := g.convertIngressToGateway(e.Resource)
 		evt := event.Event{
-			Kind:   e.Kind,
-			Source: metadata.IstioNetworkingV1Alpha3Gateways,
-			Entry:  gw,
+			Kind:     e.Kind,
+			Source:   collections.IstioNetworkingV1Alpha3Gateways,
+			Resource: gw,
 		}
-		evt.Entry.Metadata.Name = generateSyntheticGatewayName(e.Entry.Metadata.Name)
-		evt.Entry.Metadata.Version = generateSyntheticVersion(e.Entry.Metadata.Version)
+		evt.Resource.Metadata.FullName = generateSyntheticGatewayName(e.Resource.Metadata.FullName)
+		evt.Resource.Metadata.Version = generateSyntheticVersion(e.Resource.Metadata.Version)
 
 		h.Handle(evt)
 
@@ -89,12 +97,13 @@ func (g *gatewayXform) handle(e event.Event, h event.Handler) {
 	}
 }
 
-func (g *gatewayXform) convertIngressToGateway(e *resource.Entry) *resource.Entry {
-	namespace, name := e.Metadata.Name.InterpretAsNamespaceAndName()
+func (g *gatewayXform) convertIngressToGateway(r *resource.Instance) *resource.Instance {
+	namespace := r.Metadata.FullName.Namespace
+	name := r.Metadata.FullName.Name
 
 	var gateway *v1alpha3.Gateway
-	if e.Item != nil {
-		i := e.Item.(*ingress.IngressSpec)
+	if r.Message != nil {
+		i := r.Message.(*ingress.IngressSpec)
 
 		gateway = &v1alpha3.Gateway{
 			Selector: IstioIngressWorkloadLabels,
@@ -117,9 +126,9 @@ func (g *gatewayXform) convertIngressToGateway(e *resource.Entry) *resource.Entr
 				Hosts: tls.Hosts,
 				// While we accept multiple certs, we expect them to be mounted in
 				// /etc/certs/namespace/secretname/tls.crt|tls.key
-				Tls: &v1alpha3.Server_TLSOptions{
+				Tls: &v1alpha3.ServerTLSSettings{
 					HttpsRedirect: false,
-					Mode:          v1alpha3.Server_TLSOptions_SIMPLE,
+					Mode:          v1alpha3.ServerTLSSettings_SIMPLE,
 					// TODO this is no longer valid for the new v2 stuff
 					PrivateKey:        path.Join(IngressCertsPath, IngressKeyFilename),
 					ServerCertificate: path.Join(IngressCertsPath, IngressCertFilename),
@@ -139,29 +148,28 @@ func (g *gatewayXform) convertIngressToGateway(e *resource.Entry) *resource.Entr
 		})
 	}
 
-	ann := e.Metadata.Annotations.Clone()
+	ann := r.Metadata.Annotations.Clone()
 	ann.Delete(annotation.IoKubernetesIngressClass.Name)
 
-	gw := &resource.Entry{
+	gw := &resource.Instance{
 		Metadata: resource.Metadata{
-			Name:        generateSyntheticGatewayName(e.Metadata.Name),
-			Version:     generateSyntheticVersion(e.Metadata.Version),
-			CreateTime:  e.Metadata.CreateTime,
+			FullName:    generateSyntheticGatewayName(r.Metadata.FullName),
+			Version:     generateSyntheticVersion(r.Metadata.Version),
+			CreateTime:  r.Metadata.CreateTime,
 			Annotations: ann,
-			Labels:      e.Metadata.Labels,
+			Labels:      r.Metadata.Labels,
 		},
-		Item: gateway,
+		Message: gateway,
+		Origin:  r.Origin,
 	}
 
 	return gw
 }
 
-func generateSyntheticGatewayName(name resource.Name) resource.Name {
-	_, n := name.InterpretAsNamespaceAndName()
-	newName := n + "-" + IstioIngressGatewayName
-	newNamespace := IstioIngressNamespace
-
-	return resource.NewName(newNamespace, newName)
+func generateSyntheticGatewayName(name resource.FullName) resource.FullName {
+	name.Name = name.Name + "-" + IstioIngressGatewayName
+	name.Namespace = IstioIngressNamespace
+	return name
 }
 
 func generateSyntheticVersion(v resource.Version) resource.Version {

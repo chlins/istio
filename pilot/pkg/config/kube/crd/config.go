@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"istio.io/istio/pilot/pkg/model"
-	"istio.io/istio/pkg/config/schema"
 )
 
 // IstioKind is the generic Kubernetes API object wrapper
@@ -137,11 +136,9 @@ type IstioObject interface {
 // IstioObjectList is a k8s wrapper interface for config lists
 type IstioObjectList interface {
 	runtime.Object
+	meta_v1.ListInterface
+	meta_v1.ListMetaAccessor
 	GetItems() []IstioObject
-}
-
-func APIVersion(schema *schema.Instance) string {
-	return ResourceGroup(schema) + "/" + schema.Version
 }
 
 func APIVersionFromConfig(config *model.Config) string {

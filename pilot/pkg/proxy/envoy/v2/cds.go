@@ -15,30 +15,32 @@
 package v2
 
 import (
-	"fmt"
+	"time"
 
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
-	"github.com/gogo/protobuf/types"
+	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 
 	"istio.io/istio/pilot/pkg/model"
+	"istio.io/istio/pilot/pkg/networking/util"
 )
 
 // clusters aggregate a DiscoveryResponse for pushing.
-func (conn *XdsConnection) clusters(response []*xdsapi.Cluster) *xdsapi.DiscoveryResponse {
+func cdsDiscoveryResponse(response []*cluster.Cluster, noncePrefix, typeURL string) *xdsapi.DiscoveryResponse {
 	out := &xdsapi.DiscoveryResponse{
-		// All resources for CDS ought to be of the type ClusterLoadAssignment
-		TypeUrl: ClusterType,
+		// All resources for CDS ought to be of the type Cluster
+		TypeUrl: typeURL,
 
 		// Pilot does not really care for versioning. It always supplies what's currently
 		// available to it, irrespective of whether Envoy chooses to accept or reject CDS
 		// responses. Pilot believes in eventual consistency and that at some point, Envoy
 		// will begin seeing results it deems to be good.
 		VersionInfo: versionInfo(),
-		Nonce:       nonce(),
+		Nonce:       nonce(noncePrefix),
 	}
 
 	for _, c := range response {
-		cc, _ := types.MarshalAny(c)
+		cc := util.MessageToAny(c)
+		cc.TypeUrl = typeURL
 		out.Resources = append(out.Resources, cc)
 	}
 
@@ -47,13 +49,15 @@ func (conn *XdsConnection) clusters(response []*xdsapi.Cluster) *xdsapi.Discover
 
 func (s *DiscoveryServer) pushCds(con *XdsConnection, push *model.PushContext, version string) error {
 	// TODO: Modify interface to take services, and config instead of making library query registry
-	rawClusters := s.generateRawClusters(con.modelNode, push)
+	pushStart := time.Now()
+	rawClusters := s.ConfigGenerator.BuildClusters(con.node, push)
 
 	if s.DebugConfigs {
 		con.CDSClusters = rawClusters
 	}
-	response := con.clusters(rawClusters)
+	response := cdsDiscoveryResponse(rawClusters, push.Version, con.RequestedTypes.CDS)
 	err := con.send(response)
+	cdsPushTime.Record(time.Since(pushStart).Seconds())
 	if err != nil {
 		adsLog.Warnf("CDS: Send failure %s: %v", con.ConID, err)
 		recordSendError(cdsSendErrPushes, err)
@@ -63,24 +67,6 @@ func (s *DiscoveryServer) pushCds(con *XdsConnection, push *model.PushContext, v
 
 	// The response can't be easily read due to 'any' marshaling.
 	adsLog.Infof("CDS: PUSH for node:%s clusters:%d services:%d version:%s",
-		con.modelNode.ID, len(rawClusters), len(push.Services(nil)), version)
+		con.node.ID, len(rawClusters), len(push.Services(nil)), version)
 	return nil
-}
-
-func (s *DiscoveryServer) generateRawClusters(node *model.Proxy, push *model.PushContext) []*xdsapi.Cluster {
-	rawClusters := s.ConfigGenerator.BuildClusters(s.Env, node, push)
-
-	for _, c := range rawClusters {
-		if err := c.Validate(); err != nil {
-			retErr := fmt.Errorf("CDS: Generated invalid cluster for node %v: %v", node, err)
-			adsLog.Errorf("CDS: Generated invalid cluster for node:%s: %v, %v", node.ID, err, c)
-			cdsBuildErrPushes.Increment()
-			totalXDSInternalErrors.Increment()
-			// Generating invalid clusters is a bug.
-			// Panic instead of trying to recover from that, since we can't
-			// assume anything about the state.
-			panic(retErr.Error())
-		}
-	}
-	return rawClusters
 }

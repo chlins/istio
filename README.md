@@ -1,13 +1,11 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/istio/istio)](https://goreportcard.com/report/github.com/istio/istio)
 [![GoDoc](https://godoc.org/istio.io/istio?status.svg)](https://godoc.org/istio.io/istio)
-[![codecov.io](https://codecov.io/github/istio/istio/coverage.svg?branch=master)](https://codecov.io/github/istio/istio?branch=master)
-[![GolangCI](https://golangci.com/badges/github.com/istio/istio.svg)](https://golangci.com/r/github.com/istio/istio)
 
 # Istio
 
 An open platform to connect, manage, and secure microservices.
 
-- For in-depth information about how to use Istio, visit [istio.io](https://istio.io)                                   
+- For in-depth information about how to use Istio, visit [istio.io](https://istio.io)
 - To ask questions and get assistance from our community, visit [discuss.istio.io](https://discuss.istio.io)
 - To learn how to participate in our overall community, visit [our community page](https://istio.io/about/community)
 
@@ -58,6 +56,8 @@ Istio is composed of these components:
 
 - **Galley**- Central component for validating, ingesting, aggregating, transforming and distributing config within Istio.
 
+- **Operator**- The component provides user friendly options to operate the Istio service mesh.
+
 Istio currently supports Kubernetes and Consul-based environments. We plan support for additional platforms such as
 Cloud Foundry, and Mesos in the near future.
 
@@ -69,16 +69,20 @@ The Istio project is divided across a few GitHub repositories.
 currently looking at. It hosts Istio's core components and also
 the sample programs and the various documents that govern the Istio open source
 project. It includes:
-  - [security](security/). This directory contains security related code,
+
+    - [security](security/). This directory contains security related code,
 including Citadel (acting as Certificate Authority), citadel agent, etc.
-  - [pilot](pilot/). This directory
+
+    - [pilot](pilot/). This directory
 contains platform-specific code to populate the
-[abstract service model](https://istio.io/docs/concepts/traffic-management/overview.html), dynamically reconfigure the proxies
+[abstract service model](https://istio.io/docs/concepts/traffic-management/#pilot), dynamically reconfigure the proxies
 when the application topology changes, as well as translate
-[routing rules](https://istio.io/docs/reference/config/istio.networking.v1alpha3/) into proxy specific configuration.
-  - [istioctl](istioctl/). This directory contains code for the
+[routing rules](https://istio.io/docs/reference/config/networking/) into proxy specific configuration.
+
+    - [istioctl](istioctl/). This directory contains code for the
 [_istioctl_](https://istio.io/docs/reference/commands/istioctl.html) command line utility.
-  - [mixer](mixer/). This directory
+
+    - [mixer](mixer/). This directory
 contains code to enforce various policies for traffic passing through the
 proxies, and collect telemetry data from proxies and services. There
 are plugins for interfacing with various cloud platforms, policy
@@ -105,6 +109,9 @@ think the issue should get addressed.
 - **Priority/Pipeline**. Each issue has a priority which is represented by the Pipeline field within GitHub. Priority can be one of
 P0, P1, P2, or >P2. The priority indicates how important it is to address the issue within the milestone. P0 says that the
 milestone cannot be considered achieved if the issue isn't resolved.
+
+To view the project board on ZenHub, we recommend downloading the ZenHub [browser extension](https://www.zenhub.com/extension).
+Please note that this is only supported in Firefox and Chrome at the moment.
 
 We don't annotate issues with Releases; Milestones are used instead. We don't use GitHub projects at all, that
 support is disabled for our organization.

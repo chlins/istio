@@ -18,8 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"istio.io/istio/galley/pkg/config/event"
 	"istio.io/istio/galley/pkg/config/scope"
+	"istio.io/istio/pkg/config/event"
 )
 
 // RuntimeOptions is options for Runtime
@@ -120,7 +120,7 @@ func (r *Runtime) currentSessionState() sessionState {
 	se := r.session.Load()
 	if se != nil {
 		s := se.(*session)
-		state = s.state
+		state = s.getState()
 	}
 	return state
 }

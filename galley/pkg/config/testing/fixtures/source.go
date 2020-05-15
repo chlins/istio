@@ -14,7 +14,7 @@
 
 package fixtures
 
-import "istio.io/istio/galley/pkg/config/event"
+import "istio.io/istio/pkg/config/event"
 
 // Source is a test implementation of event.Source
 type Source struct {
@@ -42,4 +42,9 @@ func (s *Source) Stop() {
 // Running indicates whether the Source is currently running or not.
 func (s *Source) Running() bool {
 	return s.running
+}
+
+// Handle has the source send the specified event to its handler
+func (s *Source) Handle(e event.Event) {
+	s.Handlers.Handle(e)
 }

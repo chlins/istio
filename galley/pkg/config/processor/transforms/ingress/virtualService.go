@@ -19,18 +19,19 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/api/extensions/v1beta1"
 	ingress "k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	meshconfig "istio.io/api/mesh/v1alpha1"
 	"istio.io/api/networking/v1alpha3"
-	"istio.io/istio/galley/pkg/config/collection"
-	"istio.io/istio/galley/pkg/config/event"
+
 	"istio.io/istio/galley/pkg/config/processing"
-	"istio.io/istio/galley/pkg/config/processor/metadata"
-	"istio.io/istio/galley/pkg/config/resource"
+	"istio.io/istio/galley/pkg/config/processing/transformer"
 	"istio.io/istio/galley/pkg/config/scope"
+	"istio.io/istio/pkg/config/event"
+	"istio.io/istio/pkg/config/resource"
+	"istio.io/istio/pkg/config/schema/collection"
+	"istio.io/istio/pkg/config/schema/collections"
 )
 
 type virtualServiceXform struct {
@@ -40,29 +41,35 @@ type virtualServiceXform struct {
 
 	mu sync.Mutex
 
-	ingresses map[resource.Name]*resource.Entry
+	ingresses map[resource.FullName]*resource.Instance
 	vsByHost  map[string]*syntheticVirtualService
 }
 
-func newVirtualServiceXform(o processing.ProcessorOptions) event.Transformer {
-	xform := &virtualServiceXform{
-		options: o,
-	}
-	xform.FnTransform = event.NewFnTransform(
-		collection.Names{metadata.K8SExtensionsV1Beta1Ingresses},
-		collection.Names{metadata.IstioNetworkingV1Alpha3Virtualservices},
-		xform.start,
-		xform.stop,
-		xform.handle)
+func getVirtualServiceXformProvider() transformer.Provider {
+	inputs := collection.NewSchemasBuilder().MustAdd(collections.K8SExtensionsV1Beta1Ingresses).Build()
+	outputs := collection.NewSchemasBuilder().MustAdd(collections.IstioNetworkingV1Alpha3Virtualservices).Build()
 
-	return xform
+	createFn := func(o processing.ProcessorOptions) event.Transformer {
+		xform := &virtualServiceXform{
+			options: o,
+		}
+		xform.FnTransform = event.NewFnTransform(
+			inputs,
+			outputs,
+			xform.start,
+			xform.stop,
+			xform.handle)
+
+		return xform
+	}
+	return transformer.NewProvider(inputs, outputs, createFn)
 }
 
 // Start implements processing.Transformer
 func (g *virtualServiceXform) start() {
 	g.vsByHost = make(map[string]*syntheticVirtualService)
 
-	g.ingresses = make(map[resource.Name]*resource.Entry)
+	g.ingresses = make(map[resource.FullName]*resource.Instance)
 }
 
 // Stop implements processing.Transformer
@@ -81,18 +88,18 @@ func (g *virtualServiceXform) handle(e event.Event, h event.Handler) {
 
 	switch e.Kind {
 	case event.Added, event.Updated:
-		if !shouldProcessIngress(g.options.MeshConfig, e.Entry) {
+		if !shouldProcessIngress(g.options.MeshConfig, e.Resource) {
 			scope.Processing.Debugf("virtualServiceXform: Skipping ingress event: %v", e)
 			return
 		}
 
-		g.processIngress(e.Entry, h)
+		g.processIngress(e.Resource, h)
 
 	case event.Deleted:
-		ing, exists := g.ingresses[e.Entry.Metadata.Name]
+		ing, exists := g.ingresses[e.Resource.Metadata.FullName]
 		if exists {
 			g.removeIngress(ing, h)
-			delete(g.ingresses, e.Entry.Metadata.Name)
+			delete(g.ingresses, e.Resource.Metadata.FullName)
 		}
 
 	default:
@@ -100,11 +107,11 @@ func (g *virtualServiceXform) handle(e event.Event, h event.Handler) {
 	}
 }
 
-func (g *virtualServiceXform) processIngress(newIngress *resource.Entry, h event.Handler) {
+func (g *virtualServiceXform) processIngress(newIngress *resource.Instance, h event.Handler) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	g.ingresses[newIngress.Metadata.Name] = newIngress
+	g.ingresses[newIngress.Metadata.FullName] = newIngress
 
 	// Extract the hosts from Ingress and find all relevant Synthetic Virtual Service entries.
 	iterateHosts(newIngress, func(host string) {
@@ -135,7 +142,7 @@ func (g *virtualServiceXform) processIngress(newIngress *resource.Entry, h event
 
 	// It is possible that the ingress may have been removed from a Synthetic Virtual Service. Find and
 	// update/remove those
-	oldIngress, found := g.ingresses[newIngress.Metadata.Name]
+	oldIngress, found := g.ingresses[newIngress.Metadata.FullName]
 	if found {
 		iterateRemovedHosts(oldIngress, newIngress, func(host string) {
 			svs := g.vsByHost[host]
@@ -159,7 +166,7 @@ func (g *virtualServiceXform) processIngress(newIngress *resource.Entry, h event
 	}
 }
 
-func (g *virtualServiceXform) removeIngress(oldIngress *resource.Entry, h event.Handler) {
+func (g *virtualServiceXform) removeIngress(oldIngress *resource.Instance, h event.Handler) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -184,20 +191,20 @@ func (g *virtualServiceXform) removeIngress(oldIngress *resource.Entry, h event.
 	})
 }
 
-func iterateHosts(i *resource.Entry, fn func(string)) {
-	spec := i.Item.(*v1beta1.IngressSpec)
+func iterateHosts(i *resource.Instance, fn func(string)) {
+	spec := i.Message.(*ingress.IngressSpec)
 	for _, r := range spec.Rules {
 		host := getHost(&r)
 		fn(host)
 	}
 }
 
-func iterateRemovedHosts(o, n *resource.Entry, fn func(string)) {
+func iterateRemovedHosts(o, n *resource.Instance, fn func(string)) {
 	// Use N^2 algorithm, to avoid garbage generation.
 loop:
-	for _, ro := range o.Item.(*v1beta1.IngressSpec).Rules {
+	for _, ro := range o.Message.(*ingress.IngressSpec).Rules {
 		if n != nil {
-			for _, rn := range n.Item.(*v1beta1.IngressSpec).Rules {
+			for _, rn := range n.Message.(*ingress.IngressSpec).Rules {
 				if getHost(&ro) == getHost(&rn) {
 					continue loop
 				}
@@ -210,28 +217,28 @@ loop:
 
 func (g *virtualServiceXform) notifyUpdate(h event.Handler, k event.Kind, svs *syntheticVirtualService) {
 	e := event.Event{
-		Kind:   k,
-		Source: metadata.IstioNetworkingV1Alpha3Virtualservices,
-		Entry:  svs.generateEntry(g.options.DomainSuffix),
+		Kind:     k,
+		Source:   collections.IstioNetworkingV1Alpha3Virtualservices,
+		Resource: svs.generateEntry(g.options.DomainSuffix),
 	}
 	h.Handle(e)
 }
 
-func (g *virtualServiceXform) notifyDelete(h event.Handler, name resource.Name, v resource.Version) {
+func (g *virtualServiceXform) notifyDelete(h event.Handler, name resource.FullName, v resource.Version) {
 	e := event.Event{
 		Kind:   event.Deleted,
-		Source: metadata.IstioNetworkingV1Alpha3Virtualservices,
-		Entry: &resource.Entry{
+		Source: collections.IstioNetworkingV1Alpha3Virtualservices,
+		Resource: &resource.Instance{
 			Metadata: resource.Metadata{
-				Name:    name,
-				Version: v,
+				FullName: name,
+				Version:  v,
 			},
 		},
 	}
 	h.Handle(e)
 }
 
-func getHost(r *v1beta1.IngressRule) string {
+func getHost(r *ingress.IngressRule) string {
 	host := r.Host
 	if host == "" {
 		host = "*"
@@ -264,19 +271,15 @@ func createStringMatch(s string) *v1alpha3.StringMatch {
 	}
 }
 
-func ingressBackendToHTTPRoute(backend *ingress.IngressBackend, namespace string, domainSuffix string) *v1alpha3.HTTPRoute {
+func ingressBackendToHTTPRoute(backend *ingress.IngressBackend, namespace resource.Namespace, domainSuffix string) *v1alpha3.HTTPRoute {
 	if backend == nil {
 		return nil
 	}
 
-	port := &v1alpha3.PortSelector{
-		Port: nil,
-	}
+	port := &v1alpha3.PortSelector{}
 
 	if backend.ServicePort.Type == intstr.Int {
-		port.Port = &v1alpha3.PortSelector_Number{
-			Number: uint32(backend.ServicePort.IntVal),
-		}
+		port.Number = uint32(backend.ServicePort.IntVal)
 	} else {
 		// Port names are not allowed in destination rules.
 		return nil

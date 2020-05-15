@@ -15,6 +15,7 @@
 package rt
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -25,18 +26,18 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/tools/cache"
 
-	"istio.io/istio/galley/pkg/config/schema"
 	"istio.io/istio/galley/pkg/config/util/pb"
+	"istio.io/istio/pkg/config/schema/resource"
 )
 
-func (p *Provider) getDynamicAdapter(r schema.KubeResource) *Adapter {
+func (p *Provider) getDynamicAdapter(r resource.Schema) *Adapter {
 	return &Adapter{
 		extractObject: func(o interface{}) metav1.Object {
-			r, ok := o.(*unstructured.Unstructured)
+			res, ok := o.(*unstructured.Unstructured)
 			if !ok {
 				return nil
 			}
-			return r
+			return res
 		},
 
 		extractResource: func(o interface{}) (proto.Message, error) {
@@ -45,7 +46,7 @@ func (p *Provider) getDynamicAdapter(r schema.KubeResource) *Adapter {
 				return nil, fmt.Errorf("extractResource: not unstructured: %v", o)
 			}
 
-			pr := r.Collection.NewProtoInstance()
+			pr := r.MustNewProtoInstance()
 			if err := pb.UnmarshalData(pr, u.Object["spec"]); err != nil {
 				return nil, err
 			}
@@ -54,7 +55,7 @@ func (p *Provider) getDynamicAdapter(r schema.KubeResource) *Adapter {
 		},
 
 		newInformer: func() (cache.SharedIndexInformer, error) {
-			d, err := p.dynamicResource(r)
+			d, err := p.GetDynamicResourceInterface(r)
 			if err != nil {
 				return nil, err
 			}
@@ -62,11 +63,11 @@ func (p *Provider) getDynamicAdapter(r schema.KubeResource) *Adapter {
 			return cache.NewSharedIndexInformer(
 				&cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-						return d.List(options)
+						return d.List(context.TODO(), options)
 					},
 					WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 						options.Watch = true
-						return d.Watch(options)
+						return d.Watch(context.TODO(), options)
 					},
 				},
 				&unstructured.Unstructured{},
@@ -85,6 +86,13 @@ func (p *Provider) getDynamicAdapter(r schema.KubeResource) *Adapter {
 			}
 
 			return u, nil
+		},
+		getStatus: func(o interface{}) interface{} {
+			u, ok := o.(*unstructured.Unstructured)
+			if !ok {
+				return nil
+			}
+			return u.Object["status"]
 		},
 		isEqual:   resourceVersionsMatch,
 		isBuiltIn: false,

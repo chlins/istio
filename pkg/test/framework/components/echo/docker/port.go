@@ -17,12 +17,10 @@ package docker
 import (
 	"errors"
 	"strconv"
-	"strings"
 
 	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/test/docker"
 	"istio.io/istio/pkg/test/framework/components/echo"
-	"istio.io/istio/pkg/test/util/reserveport"
 )
 
 type portMap struct {
@@ -30,27 +28,15 @@ type portMap struct {
 	hostAgentPort uint16
 }
 
-func newPortMap(portMgr reserveport.PortManager, cfg echo.Config) (*portMap, error) {
+func newPortMap(cfg echo.Config) (*portMap, error) {
 	m := &portMap{}
-
-	// Reserve a status port for the host agent.
-	var err error
-	if m.hostAgentPort, err = portMgr.ReservePortNumber(); err != nil {
-		return nil, err
-	}
 
 	hasHTTP := false
 	hasGRPC := false
 	for _, p := range cfg.Ports {
-		// Reserve a host port.
-		hostPort, err := portMgr.ReservePortNumber()
-		if err != nil {
-			return nil, err
-		}
-
 		m.ports = append(m.ports, port{
 			containerPort: p,
-			hostPort:      hostPort,
+			// hostPort will be set later by the docker library
 		})
 
 		switch p.Protocol {
@@ -78,20 +64,16 @@ func (m *portMap) toEchoArgs() []string {
 		portNumber := port.containerPort.ServicePort
 		if port.containerPort.Protocol.IsGRPC() {
 			echoArgs = append(echoArgs, "--grpc", strconv.Itoa(portNumber))
+		} else if port.containerPort.Protocol.IsTCP() && port.containerPort.Protocol != protocol.HTTPS {
+			echoArgs = append(echoArgs, "--tcp", strconv.Itoa(portNumber))
 		} else {
 			echoArgs = append(echoArgs, "--port", strconv.Itoa(portNumber))
 		}
+		if port.containerPort.TLS {
+			echoArgs = append(echoArgs, "--tls", strconv.Itoa(portNumber))
+		}
 	}
 	return echoArgs
-}
-
-func (m *portMap) applicationPorts() string {
-	// Gather the list of ports exposed by the Echo application.
-	applicationPortsArray := make([]string, 0)
-	for _, port := range m.ports {
-		applicationPortsArray = append(applicationPortsArray, strconv.Itoa(port.containerPort.ServicePort))
-	}
-	return strings.Join(applicationPortsArray, ",")
 }
 
 func (m *portMap) toDocker() docker.PortMap {

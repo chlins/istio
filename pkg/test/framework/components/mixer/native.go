@@ -24,11 +24,11 @@ import (
 	"google.golang.org/grpc"
 
 	istioMixerV1 "istio.io/api/mixer/v1"
+
 	"istio.io/istio/mixer/adapter"
 	"istio.io/istio/mixer/pkg/server"
 	generatedTmplRepo "istio.io/istio/mixer/template"
 	"istio.io/istio/pkg/test"
-	"istio.io/istio/pkg/test/deployment"
 	"istio.io/istio/pkg/test/framework/components/environment/native"
 	"istio.io/istio/pkg/test/framework/components/galley"
 	"istio.io/istio/pkg/test/framework/resource"
@@ -81,15 +81,6 @@ func newNative(ctx resource.Context, config Config) (Instance, error) {
 		return nil, err
 	}
 
-	helmExtractDir, err := ctx.CreateTmpDirectory("helm-mixer-attribute-extract")
-	if err != nil {
-		return nil, err
-	}
-	n.client.attributeManifest, err = deployment.ExtractAttributeManifest(helmExtractDir)
-	if err != nil {
-		return nil, err
-	}
-
 	n.client.args = server.DefaultArgs()
 	n.client.args.APIPort = 0
 	n.client.args.MonitoringPort = 0
@@ -123,24 +114,6 @@ func newNative(ctx resource.Context, config Config) (Instance, error) {
 	n.client.clients = map[string]istioMixerV1.MixerClient{
 		telemetryService: client,
 		policyService:    client,
-	}
-
-	//// Update the mesh with the mixer address
-	//port := n.client.server.Addr().(*net.TCPAddr).Port
-	//mixerAddr := fmt.Sprintf("%s.%s:%d", localServiceName, service.FullyQualifiedDomainName, port)
-	//env.Mesh.MixerCheckServer = mixerAddr
-	//env.Mesh.MixerReportServer = mixerAddr
-	//
-	//// Add a service entry for Mixer.
-	//_, err = env.ServiceManager.Create(localServiceName, "", model.PortList{
-	//	&model.Port{
-	//		Name:     grpcPortName,
-	//		Protocol: protocol.GRPC,
-	//		Port:     port,
-	//	},
-	//})
-	if err != nil {
-		return nil, err
 	}
 
 	return n, nil

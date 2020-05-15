@@ -21,8 +21,8 @@ import (
 	"io/ioutil"
 	"testing"
 
-	envoyAdmin "github.com/envoyproxy/go-control-plane/envoy/admin/v2alpha"
-	"github.com/gogo/protobuf/jsonpb"
+	envoyAdmin "github.com/envoyproxy/go-control-plane/envoy/admin/v3"
+	"github.com/golang/protobuf/jsonpb"
 
 	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/test"
@@ -44,6 +44,8 @@ func TestCheckOutboundConfig(t *testing.T) {
 	if err := jsonpb.Unmarshal(bytes.NewReader(configDump), cfg); err != nil {
 		t.Fatal(err)
 	}
+
+	src := testConfig{}
 
 	cfgs := []testConfig{
 		{
@@ -100,7 +102,7 @@ func TestCheckOutboundConfig(t *testing.T) {
 
 	for _, cfg := range cfgs {
 		t.Run(fmt.Sprintf("%s_%d[%s]", cfg.service, cfg.servicePort, cfg.protocol), func(t *testing.T) {
-			if err := common.CheckOutboundConfig(&cfg, cfg.Config().Ports[0], validator); err != nil {
+			if err := common.CheckOutboundConfig(&src, &cfg, cfg.Config().Ports[0], validator); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -195,5 +197,13 @@ func (n *fakeNamespace) Name() string {
 }
 
 func (n *fakeNamespace) ID() resource.ID {
+	panic("not implemented")
+}
+
+func (*testConfig) Logs() (string, error) {
+	panic("not implemented")
+}
+
+func (*testConfig) LogsOrFail(_ test.Failer) string {
 	panic("not implemented")
 }

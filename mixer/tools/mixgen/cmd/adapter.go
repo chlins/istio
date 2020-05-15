@@ -31,7 +31,7 @@ import (
 
 	"istio.io/istio/mixer/cmd/shared"
 	"istio.io/istio/mixer/pkg/runtime/config/constant"
-	"istio.io/pkg/env"
+	"istio.io/istio/pkg/test/env"
 )
 
 func adapterCfgCmd(rawArgs []string, printf, fatalf shared.FormatFn) *cobra.Command {
@@ -112,9 +112,8 @@ spec:
 		}
 	}
 
-	goPath := env.RegisterStringVar("GOPATH", "", "Specifies directories outside of $GOROOT that contain the source for Go projects and their binaries.").Get()
 	adapterObj := &adapterCRVar{
-		RawCommand:   strings.Replace(rawCommand, goPath, "$GOPATH", -1),
+		RawCommand:   strings.Replace(rawCommand, env.IstioSrc, "$REPO_ROOT", -1),
 		Name:         name,
 		Namespace:    namespace,
 		Description:  description,

@@ -1,3 +1,5 @@
+// +build !race
+
 // Copyright 2018 Istio Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +19,6 @@ package spybackend
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -254,13 +255,6 @@ spec:
 )
 
 func TestNoSessionBackend(t *testing.T) {
-
-	// We skip this test if it is being run as part of the racetest because
-	// it is intensive on memory and will cause the test to fail with no error
-	if len(os.Getenv("RACE_TEST")) > 0 {
-		t.Skip()
-	}
-
 	testdata := []struct {
 		name   string
 		calls  []adapter_integration.Call
@@ -324,21 +318,15 @@ func TestNoSessionBackend(t *testing.T) {
 						    {
 						     "dimensions": {
 						      "destination_service": {
-						       "Value": {
-						        "StringValue": "unknown"
-						       }
+						       "stringValue": "unknown"
 						      },
 						      "response_code": {
-						       "Value": {
-						        "Int64Value": 400
-						       }
+						       "int64Value": "400"
 						      }
 						     },
 						     "name": "i2metric.instance.istio-system",
 						     "value": {
-						      "Value": {
-						       "Int64Value": 1337
-						      }
+						      "int64Value": "1337"
 						     }
 						    }
 						   ]
@@ -349,21 +337,15 @@ func TestNoSessionBackend(t *testing.T) {
 						    {
 						     "dimensions": {
 						      "destination_service": {
-						       "Value": {
-						        "StringValue": "unknown"
-						       }
+						       "stringValue": "unknown"
 						      },
 						      "response_code": {
-						       "Value": {
-						        "Int64Value": 200
-						       }
+						       "int64Value": "200"
 						      }
 						     },
 						     "name": "i1metric.instance.istio-system",
 						     "value": {
-						      "Value": {
-						       "Int64Value": 1337
-						      }
+						      "int64Value": "1337"
 						     }
 						    }
 						   ]
@@ -400,21 +382,15 @@ func TestNoSessionBackend(t *testing.T) {
 						    {
 						     "dimensions": {
 						      "destination_service": {
-						       "Value": {
-						        "StringValue": "unknown"
-						       }
+						       "stringValue": "unknown"
 						      },
 						      "response_code": {
-						       "Value": {
-						        "Int64Value": 400
-						       }
+						       "int64Value": "400"
 						      }
 						     },
 						     "name": "i2metric.instance.istio-system",
 						     "value": {
-						      "Value": {
-						       "Int64Value": 666
-						      }
+						      "int64Value": "666"
 						     }
 						    }
 						   ]
@@ -425,21 +401,15 @@ func TestNoSessionBackend(t *testing.T) {
 						    {
 						     "dimensions": {
 						      "destination_service": {
-						       "Value": {
-						        "StringValue": "unknown"
-						       }
+						       "stringValue": "unknown"
 						      },
 						      "response_code": {
-						       "Value": {
-						        "Int64Value": 200
-						       }
+						       "int64Value": "200"
 						      }
 						     },
 						     "name": "i1metric.instance.istio-system",
 						     "value": {
-						      "Value": {
-						       "Int64Value": 666
-						      }
+						      "int64Value": "666"
 						     }
 						    }
 						   ]
@@ -476,21 +446,15 @@ func TestNoSessionBackend(t *testing.T) {
 							    {
 							     "dimensions": {
 							      "destination_service": {
-							       "Value": {
-							        "StringValue": "unknown"
-							       }
+							       "stringValue": "unknown"
 							      },
 							      "response_code": {
-							       "Value": {
-							        "Int64Value": 400
-							       }
+							       "int64Value": "400"
 							      }
 							     },
 							     "name": "i2metric.instance.istio-system",
 							     "value": {
-							      "Value": {
-							       "Int64Value": 456
-							      }
+							      "int64Value": "456"
 							     }
 							    }
 							   ]
@@ -501,21 +465,15 @@ func TestNoSessionBackend(t *testing.T) {
 							    {
 							     "dimensions": {
 							      "destination_service": {
-							       "Value": {
-							        "StringValue": "unknown"
-							       }
+							       "stringValue": "unknown"
 							      },
 							      "response_code": {
-							       "Value": {
-							        "Int64Value": 200
-							       }
+							       "int64Value": "200"
 							      }
 							     },
 							     "name": "i1metric.instance.istio-system",
 							     "value": {
-							      "Value": {
-							       "Int64Value": 123
-							      }
+							      "int64Value": "123"
 							     }
 							    }
 							   ]
@@ -551,9 +509,7 @@ func TestNoSessionBackend(t *testing.T) {
 					    		   "instance": {
 					    		    "name": "i3list.instance.istio-system",
 					    		    "value": {
-                                      "Value": {
-                                        "StringValue": "foobar"
-                                      }
+                                      "stringValue": "foobar"
                                     }
 					    		   }
 					    		  }
@@ -588,9 +544,7 @@ func TestNoSessionBackend(t *testing.T) {
 					    		   "instance": {
 					    		    "name": "i3list.instance.istio-system",
 					                "value": {
-                                      "Value": {
-                                        "StringValue": "defaultstr"
-                                      }
+                                      "stringValue": "defaultstr"
                                     }
 					    		   }
 					    		  }
@@ -632,9 +586,7 @@ func TestNoSessionBackend(t *testing.T) {
             "instance": {
                 "name": "i3list.instance.istio-system",
                 "value": {
-                    "Value": {
-                        "StringValue": "defaultstr"
-                    }
+                    "stringValue": "defaultstr"
                 }
             }
         }
@@ -682,9 +634,7 @@ func TestNoSessionBackend(t *testing.T) {
 					    		   "instance": {
 					    		    "name": "i3list.instance.istio-system",
 					    		    "value": {
-                                      "Value": {
-                                        "StringValue": "foobar"
-                                      }
+                                      "stringValue": "foobar"
                                     }
 					    		   }
 					    		  },
@@ -693,24 +643,16 @@ func TestNoSessionBackend(t *testing.T) {
 					    		   "instance": {
 					    		    "dimensions": {
 					    		     "destination": {
-					    		      "Value": {
-					    		       "StringValue": "unknown"
-					    		      }
+					    		      "stringValue": "unknown"
 					    		     },
 					    		     "destinationVersion": {
-					    		      "Value": {
-					    		       "StringValue": "unknown"
-					    		      }
+					    		      "stringValue": "unknown"
 					    		     },
 					    		     "source": {
-					    		      "Value": {
-					    		       "StringValue": "foobar"
-					    		      }
+					    		      "stringValue": "foobar"
 					    		     },
 					    		     "sourceVersion": {
-					    		      "Value": {
-					    		       "StringValue": "unknown"
-					    		      }
+					    		      "stringValue": "unknown"
 					    		     }
 					    		    },
 					    		    "name": "requestQuota.instance.istio-system"
@@ -764,9 +706,7 @@ func TestNoSessionBackend(t *testing.T) {
 					    		   "instance": {
 					    		    "name": "i3list.instance.istio-system",
 					    		    "value": {
-                                      "Value": {
-                                        "StringValue": "defaultstr"
-                                      }
+                                      "stringValue": "defaultstr"
                                     }
 					    		   }
 					    		  },
@@ -775,24 +715,16 @@ func TestNoSessionBackend(t *testing.T) {
 					    		   "instance": {
 					    		    "dimensions": {
 					    		     "destination": {
-					    		      "Value": {
-					    		       "StringValue": "unknown"
-					    		      }
+					    		      "stringValue": "unknown"
 					    		     },
 					    		     "destinationVersion": {
-					    		      "Value": {
-					    		       "StringValue": "unknown"
-					    		      }
+					    		      "stringValue": "unknown"
 					    		     },
 					    		     "source": {
-					    		      "Value": {
-					    		       "StringValue": "unknown"
-					    		      }
+					    		      "stringValue": "unknown"
 					    		     },
 					    		     "sourceVersion": {
-					    		      "Value": {
-					    		       "StringValue": "unknown"
-					    		      }
+					    		      "stringValue": "unknown"
 					    		     }
 					    		    },
 					    		    "name": "requestQuota.instance.istio-system"

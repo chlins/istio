@@ -15,10 +15,12 @@
 package rt
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 
 	"github.com/gogo/protobuf/proto"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/api/extensions/v1beta1"
 	v1beta12 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -61,8 +63,11 @@ func (p *Provider) initKnownAdapters() {
 				}
 				return out, nil
 			},
-			isEqual:   resourceVersionsMatch,
-			isBuiltIn: true,
+			getStatus:                     noStatus,
+			isEqual:                       resourceVersionsMatch,
+			isBuiltIn:                     true,
+			isDefaultExcluded:             true,
+			isRequiredForServiceDiscovery: true,
 		},
 
 		asTypesKey("", "Namespace"): {
@@ -88,8 +93,11 @@ func (p *Provider) initKnownAdapters() {
 				}
 				return out, nil
 			},
-			isEqual:   resourceVersionsMatch,
-			isBuiltIn: true,
+			getStatus:                     noStatus,
+			isEqual:                       resourceVersionsMatch,
+			isBuiltIn:                     true,
+			isDefaultExcluded:             true,
+			isRequiredForServiceDiscovery: true,
 		},
 
 		asTypesKey("", "Node"): {
@@ -115,8 +123,11 @@ func (p *Provider) initKnownAdapters() {
 				}
 				return out, nil
 			},
-			isEqual:   resourceVersionsMatch,
-			isBuiltIn: true,
+			getStatus:                     noStatus,
+			isEqual:                       resourceVersionsMatch,
+			isBuiltIn:                     true,
+			isDefaultExcluded:             true,
+			isRequiredForServiceDiscovery: true,
 		},
 
 		asTypesKey("", "Pod"): {
@@ -142,6 +153,37 @@ func (p *Provider) initKnownAdapters() {
 				}
 				return out, nil
 			},
+			getStatus:                     noStatus,
+			isEqual:                       resourceVersionsMatch,
+			isBuiltIn:                     true,
+			isDefaultExcluded:             true,
+			isRequiredForServiceDiscovery: true,
+		},
+
+		asTypesKey("", "Secret"): {
+			extractObject: defaultExtractObject,
+			extractResource: func(o interface{}) (proto.Message, error) {
+				if obj, ok := o.(*v1.Secret); ok {
+					return obj, nil
+				}
+				return nil, fmt.Errorf("unable to convert to v1.Secret: %T", o)
+			},
+			newInformer: func() (cache.SharedIndexInformer, error) {
+				informer, err := p.sharedInformerFactory()
+				if err != nil {
+					return nil, err
+				}
+
+				return informer.Core().V1().Secrets().Informer(), nil
+			},
+			parseJSON: func(input []byte) (interface{}, error) {
+				out := &v1.Secret{}
+				if _, _, err := deserializer.Decode(input, nil, out); err != nil {
+					return nil, err
+				}
+				return out, nil
+			},
+			getStatus: noStatus,
 			isEqual:   resourceVersionsMatch,
 			isBuiltIn: true,
 		},
@@ -183,8 +225,10 @@ func (p *Provider) initKnownAdapters() {
 				// Endpoint updates can be noisy. Make sure that the subsets have actually changed.
 				return reflect.DeepEqual(r1.Subsets, r2.Subsets)
 			},
-
-			isBuiltIn: true,
+			getStatus:                     noStatus,
+			isBuiltIn:                     true,
+			isDefaultExcluded:             true,
+			isRequiredForServiceDiscovery: true,
 		},
 		asTypesKey("extensions", "Ingress"): {
 			extractObject: defaultExtractObject,
@@ -209,6 +253,7 @@ func (p *Provider) initKnownAdapters() {
 				}
 				return out, nil
 			},
+			getStatus: noStatus,
 			isEqual:   resourceVersionsMatch,
 			isBuiltIn: true,
 		},
@@ -228,10 +273,10 @@ func (p *Provider) initKnownAdapters() {
 				inf := cache.NewSharedIndexInformer(
 					&cache.ListWatch{
 						ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-							return ext.ApiextensionsV1beta1().CustomResourceDefinitions().List(options)
+							return ext.ApiextensionsV1beta1().CustomResourceDefinitions().List(context.TODO(), options)
 						},
 						WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-							return ext.ApiextensionsV1beta1().CustomResourceDefinitions().Watch(options)
+							return ext.ApiextensionsV1beta1().CustomResourceDefinitions().Watch(context.TODO(), options)
 						},
 					},
 					&v1beta12.CustomResourceDefinition{},
@@ -248,6 +293,63 @@ func (p *Provider) initKnownAdapters() {
 				}
 				return out, nil
 			},
+			getStatus: noStatus,
+			isEqual:   resourceVersionsMatch,
+			isBuiltIn: true,
+		},
+
+		asTypesKey("apps", "Deployment"): {
+			extractObject: defaultExtractObject,
+			extractResource: func(o interface{}) (proto.Message, error) {
+				if obj, ok := o.(*appsv1.Deployment); ok {
+					return obj, nil
+				}
+				return nil, fmt.Errorf("unable to convert to v1.Deployment: %T", o)
+			},
+			newInformer: func() (cache.SharedIndexInformer, error) {
+				informer, err := p.sharedInformerFactory()
+				if err != nil {
+					return nil, err
+				}
+
+				return informer.Apps().V1().Deployments().Informer(), nil
+			},
+			parseJSON: func(input []byte) (interface{}, error) {
+				out := &appsv1.Deployment{}
+				if _, _, err := deserializer.Decode(input, nil, out); err != nil {
+					return nil, err
+				}
+				return out, nil
+			},
+			getStatus: noStatus,
+			isEqual:   resourceVersionsMatch,
+			isBuiltIn: true,
+		},
+
+		asTypesKey("", "ConfigMap"): {
+			extractObject: defaultExtractObject,
+			extractResource: func(o interface{}) (proto.Message, error) {
+				if obj, ok := o.(*v1.ConfigMap); ok {
+					return obj, nil
+				}
+				return nil, fmt.Errorf("unable to convert to v1.ConfigMap: %T", o)
+			},
+			newInformer: func() (cache.SharedIndexInformer, error) {
+				informer, err := p.sharedInformerFactory()
+				if err != nil {
+					return nil, err
+				}
+
+				return informer.Core().V1().ConfigMaps().Informer(), nil
+			},
+			parseJSON: func(input []byte) (interface{}, error) {
+				out := &v1.ConfigMap{}
+				if _, _, err := deserializer.Decode(input, nil, out); err != nil {
+					return nil, err
+				}
+				return out, nil
+			},
+			getStatus: noStatus,
 			isEqual:   resourceVersionsMatch,
 			isBuiltIn: true,
 		},
@@ -265,5 +367,9 @@ func defaultExtractObject(o interface{}) metav1.Object {
 	if obj, ok := o.(metav1.Object); ok {
 		return obj
 	}
+	return nil
+}
+
+func noStatus(_ interface{}) interface{} {
 	return nil
 }

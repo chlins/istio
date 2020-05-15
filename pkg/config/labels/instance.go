@@ -12,14 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This file describes the abstract model of services (and their instances) as
-// represented in Istio. This model is independent of the underlying platform
-// (Kubernetes, Mesos, etc.). Platform specific adapters found populate the
-// model object with various fields, from the metadata found in the platform.
-// The platform independent proxy code uses the representation in the model to
-// generate the configuration files for the Layer 7 proxy sidecar. The proxy
-// code is specific to individual proxy implementations
-
 package labels
 
 import (
@@ -34,7 +26,7 @@ import (
 
 const (
 	DNS1123LabelMaxLength = 63 // Public for testing only.
-	dns1123LabelFmt       = "[a-zA-Z0-9](?:[-a-z-A-Z0-9]*[a-zA-Z0-9])?"
+	dns1123LabelFmt       = "[a-zA-Z0-9](?:[-a-zA-Z0-9]*[a-zA-Z0-9])?"
 	// a wild-card prefix is an '*', a normal DNS1123 label with a leading '*' or '*-', or a normal DNS1123 label
 	wildcardPrefix = `(\*|(\*|\*-)?` + dns1123LabelFmt + `)`
 
@@ -86,6 +78,9 @@ func (i Instance) Equals(that Instance) bool {
 
 // Validate ensures tag is well-formed
 func (i Instance) Validate() error {
+	if i == nil {
+		return nil
+	}
 	var errs error
 	for k, v := range i {
 		if err := validateTagKey(k); err != nil {

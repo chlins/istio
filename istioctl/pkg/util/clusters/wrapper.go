@@ -17,8 +17,8 @@ package clusters
 import (
 	"bytes"
 
-	adminapi "github.com/envoyproxy/go-control-plane/envoy/admin/v2alpha"
-	"github.com/gogo/protobuf/jsonpb"
+	adminapi "github.com/envoyproxy/go-control-plane/envoy/admin/v3"
+	"github.com/golang/protobuf/jsonpb"
 )
 
 // Wrapper is a wrapper around the Envoy Clusters

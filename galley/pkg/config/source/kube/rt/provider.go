@@ -23,8 +23,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 
-	"istio.io/istio/galley/pkg/config/schema"
 	"istio.io/istio/galley/pkg/config/source/kube"
+	"istio.io/istio/pkg/config/schema/resource"
 )
 
 var (
@@ -62,8 +62,8 @@ func NewProvider(interfaces kube.Interfaces, resyncPeriod time.Duration) *Provid
 
 // GetAdapter returns a type for the group/kind. If the type is a well-known type, then the returned type will have
 // a specialized implementation. Otherwise, it will be using the dynamic conversion logic.
-func (p *Provider) GetAdapter(r schema.KubeResource) *Adapter {
-	if t, found := p.known[asTypesKey(r.Group, r.Kind)]; found {
+func (p *Provider) GetAdapter(r resource.Schema) *Adapter {
+	if t, found := p.known[asTypesKey(r.Group(), r.Kind())]; found {
 		return t
 	}
 
@@ -88,7 +88,8 @@ func (p *Provider) sharedInformerFactory() (informers.SharedInformerFactory, err
 	return p.informers, nil
 }
 
-func (p *Provider) dynamicResource(r schema.KubeResource) (dynamic.NamespaceableResourceInterface, error) {
+// GetDynamicResourceInterface returns a dynamic.NamespaceableResourceInterface for the given resource.
+func (p *Provider) GetDynamicResourceInterface(r resource.Schema) (dynamic.NamespaceableResourceInterface, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -104,8 +105,8 @@ func (p *Provider) dynamicResource(r schema.KubeResource) (dynamic.Namespaceable
 	}
 
 	return p.dynamicInterface.Resource(kubeSchema.GroupVersionResource{
-		Group:    r.Group,
-		Version:  r.Version,
-		Resource: r.Plural,
+		Group:    r.Group(),
+		Version:  r.Version(),
+		Resource: r.Plural(),
 	}), nil
 }

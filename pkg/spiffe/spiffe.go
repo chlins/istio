@@ -20,6 +20,8 @@ import (
 	"sync"
 
 	"istio.io/pkg/log"
+
+	"istio.io/istio/pkg/config/constants"
 )
 
 const (
@@ -28,7 +30,7 @@ const (
 	URIPrefix = Scheme + "://"
 
 	// The default SPIFFE URL value for trust domain
-	defaultTrustDomain = "cluster.local"
+	defaultTrustDomain = constants.DefaultKubernetesDomain
 )
 
 var (
@@ -60,17 +62,17 @@ func DetermineTrustDomain(commandLineTrustDomain string, isKubernetes bool) stri
 	return ""
 }
 
-// GenSpiffeURI returns the formatted uri(SPIFFEE format for now) for the certificate.
+// GenSpiffeURI returns the formatted uri(SPIFFE format for now) for the certificate.
 func GenSpiffeURI(ns, serviceAccount string) (string, error) {
 	var err error
 	if ns == "" || serviceAccount == "" {
 		err = fmt.Errorf(
-			"namespace or service account empty for SPIFFEE uri ns=%v serviceAccount=%v", ns, serviceAccount)
+			"namespace or service account empty for SPIFFE uri ns=%v serviceAccount=%v", ns, serviceAccount)
 	}
 	return URIPrefix + GetTrustDomain() + "/ns/" + ns + "/sa/" + serviceAccount, err
 }
 
-// MustGenSpiffeURI returns the formatted uri(SPIFFEE format for now) for the certificate and logs if there was an error.
+// MustGenSpiffeURI returns the formatted uri(SPIFFE format for now) for the certificate and logs if there was an error.
 func MustGenSpiffeURI(ns, serviceAccount string) string {
 	uri, err := GenSpiffeURI(ns, serviceAccount)
 	if err != nil {

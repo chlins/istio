@@ -23,6 +23,7 @@ import (
 	"istio.io/pkg/log"
 
 	"istio.io/istio/pilot/pkg/model"
+	"istio.io/istio/pilot/pkg/serviceregistry"
 	"istio.io/istio/pkg/config/host"
 	"istio.io/istio/pkg/config/labels"
 	"istio.io/istio/pkg/config/protocol"
@@ -99,8 +100,9 @@ func convertService(endpoints []*api.CatalogService) *model.Service {
 		MeshExternal: meshExternal,
 		Resolution:   resolution,
 		Attributes: model.ServiceAttributes{
-			Name:      string(hostname),
-			Namespace: model.IstioDefaultConfigNamespace,
+			ServiceRegistry: string(serviceregistry.Consul),
+			Name:            string(hostname),
+			Namespace:       model.IstioDefaultConfigNamespace,
 		},
 	}
 
@@ -124,14 +126,20 @@ func convertInstance(instance *api.CatalogService) *model.ServiceInstance {
 		resolution = model.DNSLB
 	}
 
+	tlsMode := model.GetTLSModeFromEndpointLabels(svcLabels)
 	hostname := serviceHostname(instance.ServiceName)
 	return &model.ServiceInstance{
-		Endpoint: model.NetworkEndpoint{
-			Address:     addr,
-			Port:        instance.ServicePort,
-			ServicePort: port,
-			Locality:    instance.Datacenter,
+		Endpoint: &model.IstioEndpoint{
+			Address:         addr,
+			EndpointPort:    uint32(instance.ServicePort),
+			ServicePortName: port.Name,
+			Locality: model.Locality{
+				Label: instance.Datacenter,
+			},
+			Labels:  svcLabels,
+			TLSMode: tlsMode,
 		},
+		ServicePort: port,
 		Service: &model.Service{
 			Hostname:     hostname,
 			Address:      instance.ServiceAddress,
@@ -143,7 +151,6 @@ func convertInstance(instance *api.CatalogService) *model.ServiceInstance {
 				Namespace: model.IstioDefaultConfigNamespace,
 			},
 		},
-		Labels: svcLabels,
 	}
 }
 

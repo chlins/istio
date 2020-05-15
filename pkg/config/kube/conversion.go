@@ -12,24 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This file describes the abstract model of services (and their instances) as
-// represented in Istio. This model is independent of the underlying platform
-// (Kubernetes, Mesos, etc.). Platform specific adapters found populate the
-// model object with various fields, from the metadata found in the platform.
-// The platform independent proxy code uses the representation in the model to
-// generate the configuration files for the Layer 7 proxy sidecar. The proxy
-// code is specific to individual proxy implementations
-
 package kube
 
 import (
 	"strings"
 
-	"istio.io/istio/pkg/config/labels"
 	"istio.io/istio/pkg/config/protocol"
 
 	coreV1 "k8s.io/api/core/v1"
-	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -50,21 +40,20 @@ var (
 	}
 )
 
-func ConvertLabels(obj metaV1.ObjectMeta) labels.Instance {
-	out := make(labels.Instance, len(obj.Labels))
-	for k, v := range obj.Labels {
-		out[k] = v
-	}
-	return out
-}
-
 var grpcWeb = string(protocol.GRPCWeb)
 var grpcWebLen = len(grpcWeb)
 
 // ConvertProtocol from k8s protocol and port name
-func ConvertProtocol(port int32, name string, proto coreV1.Protocol) protocol.Instance {
+func ConvertProtocol(port int32, portName string, proto coreV1.Protocol, appProto *string) protocol.Instance {
 	if proto == coreV1.ProtocolUDP {
 		return protocol.UDP
+	}
+
+	// If application protocol is set, we will use that
+	// If not, use the port name
+	name := portName
+	if appProto != nil {
+		name = *appProto
 	}
 
 	// Check if the port name prefix is "grpc-web". Need to do this before the general

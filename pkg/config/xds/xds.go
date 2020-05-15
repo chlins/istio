@@ -15,15 +15,19 @@
 package xds
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 
 	xdsAPI "github.com/envoyproxy/go-control-plane/envoy/api/v2"
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
+	listener "github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
+	route "github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
+	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	httpConn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
-	xdsUtil "github.com/envoyproxy/go-control-plane/pkg/util"
-	"github.com/gogo/protobuf/proto"
+	gogojsonpb "github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/types"
+	"github.com/golang/protobuf/jsonpb"
+	"github.com/golang/protobuf/proto"
 
 	networking "istio.io/api/networking/v1alpha3"
 )
@@ -37,7 +41,7 @@ func BuildXDSObjectFromStruct(applyTo networking.EnvoyFilter_ApplyTo, value *typ
 	var obj proto.Message
 	switch applyTo {
 	case networking.EnvoyFilter_CLUSTER:
-		obj = &xdsAPI.Cluster{}
+		obj = &cluster.Cluster{}
 	case networking.EnvoyFilter_LISTENER:
 		obj = &xdsAPI.Listener{}
 	case networking.EnvoyFilter_ROUTE_CONFIGURATION:
@@ -53,11 +57,25 @@ func BuildXDSObjectFromStruct(applyTo networking.EnvoyFilter_ApplyTo, value *typ
 	case networking.EnvoyFilter_HTTP_ROUTE:
 		obj = &route.Route{}
 	default:
-		return nil, fmt.Errorf("envoy filter: unknown object type for applyTo %s", applyTo.String())
+		return nil, fmt.Errorf("Envoy filter: unknown object type for applyTo %s", applyTo.String()) // nolint: golint,stylecheck
 	}
 
-	if err := xdsUtil.StructToMessage(value, obj); err != nil {
-		return nil, fmt.Errorf("envoy filter: %v", err)
+	if err := GogoStructToMessage(value, obj); err != nil {
+		return nil, fmt.Errorf("Envoy filter: %v", err) // nolint: golint,stylecheck
 	}
 	return obj, nil
+}
+
+func GogoStructToMessage(pbst *types.Struct, out proto.Message) error {
+	if pbst == nil {
+		return errors.New("nil struct")
+	}
+
+	buf := &bytes.Buffer{}
+	if err := (&gogojsonpb.Marshaler{OrigName: true}).Marshal(buf, pbst); err != nil {
+		return err
+	}
+
+	// Ignore unknown fields as they may be sending versions of the proto we are not internally using
+	return (&jsonpb.Unmarshaler{AllowUnknownFields: true}).Unmarshal(buf, out)
 }

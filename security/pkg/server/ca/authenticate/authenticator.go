@@ -29,7 +29,8 @@ import (
 
 const (
 	bearerTokenPrefix = "Bearer "
-	httpAuthHeader    = "authorization"
+	authorizationMeta = "authorization"
+	clusterIDMeta     = "clusterid"
 	idTokenIssuer     = "https://accounts.google.com"
 
 	ClientCertAuthenticatorType = "ClientCertAuthenticator"
@@ -63,7 +64,7 @@ func (cca *ClientCertAuthenticator) AuthenticatorType() string {
 // chain validation itself.
 func (cca *ClientCertAuthenticator) Authenticate(ctx context.Context) (*Caller, error) {
 	peer, ok := peer.FromContext(ctx)
-	if !ok {
+	if !ok || peer.AuthInfo == nil {
 		return nil, fmt.Errorf("no client certificate is presented")
 	}
 
@@ -141,7 +142,7 @@ func extractBearerToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no metadata is attached")
 	}
 
-	authHeader, exists := md[httpAuthHeader]
+	authHeader, exists := md[authorizationMeta]
 	if !exists {
 		return "", fmt.Errorf("no HTTP authorization header exists")
 	}
@@ -153,4 +154,21 @@ func extractBearerToken(ctx context.Context) (string, error) {
 	}
 
 	return "", fmt.Errorf("no bearer token exists in HTTP authorization header")
+}
+
+func extractClusterID(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+
+	clusterIDHeader, exists := md[clusterIDMeta]
+	if !exists {
+		return ""
+	}
+
+	if len(clusterIDHeader) == 1 {
+		return clusterIDHeader[0]
+	}
+	return ""
 }

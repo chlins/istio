@@ -19,37 +19,33 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/gogo/protobuf/types"
+
 	"istio.io/istio/pkg/config/mesh"
 )
 
 func TestEnvoyArgs(t *testing.T) {
 	proxyConfig := mesh.DefaultProxyConfig()
 	proxyConfig.ServiceCluster = "my-cluster"
-	proxyConfig.Concurrency = 8
+	proxyConfig.Concurrency = &types.Int32Value{Value: 8}
 
-	opts := make(map[string]interface{})
-	opts["sds_uds_path"] = "udspath"
-	opts["sds_token_path"] = "tokenpath"
-
-	test := &envoy{
-		config:         proxyConfig,
-		node:           "my-node",
-		extraArgs:      []string{"-l", "trace", "--component-log-level", "misc:error"},
-		nodeIPs:        []string{"10.75.2.9", "192.168.11.18"},
-		dnsRefreshRate: "60s",
-		opts:           opts,
+	cfg := ProxyConfig{
+		Config:            proxyConfig,
+		Node:              "my-node",
+		LogLevel:          "trace",
+		ComponentLogLevel: "misc:error",
+		NodeIPs:           []string{"10.75.2.9", "192.168.11.18"},
+		PodName:           "",
+		PodNamespace:      "",
+		PodIP:             nil,
 	}
 
-	testProxy := NewProxy(
-		proxyConfig,
-		"my-node",
-		"trace",
-		"misc:error",
-		nil,
-		[]string{"10.75.2.9", "192.168.11.18"},
-		"60s",
-		opts,
-	)
+	test := &envoy{
+		ProxyConfig: cfg,
+		extraArgs:   []string{"-l", "trace", "--component-log-level", "misc:error"},
+	}
+
+	testProxy := NewProxy(cfg)
 	if !reflect.DeepEqual(testProxy, test) {
 		t.Errorf("unexpected struct got\n%v\nwant\n%v", testProxy, test)
 	}
@@ -64,7 +60,7 @@ func TestEnvoyArgs(t *testing.T) {
 		"--service-node", "my-node",
 		"--max-obj-name-len", fmt.Sprint(proxyConfig.StatNameLength),
 		"--local-address-ip-version", "v4",
-		"--allow-unknown-fields",
+		"--log-format", "%Y-%m-%dT%T.%fZ\t%l\tenvoy %n\t%v",
 		"-l", "trace",
 		"--component-log-level", "misc:error",
 		"--config-yaml", `{"key": "value"}`,

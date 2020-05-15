@@ -55,9 +55,9 @@ func (s *grpcInstance) Start(onReady OnReadyFunc) error {
 	}
 	// Store the actual listening port back to the argument.
 	s.Port.Port = p
-	fmt.Printf("Listening GRPC on %v\n", p)
 
-	if s.TLSCert != "" && s.TLSKey != "" {
+	if s.Port.TLS {
+		fmt.Printf("Listening GRPC (over TLS) on %v\n", p)
 		// Create the TLS credentials
 		creds, errCreds := credentials.NewServerTLSFromFile(s.TLSCert, s.TLSKey)
 		if errCreds != nil {
@@ -65,6 +65,7 @@ func (s *grpcInstance) Start(onReady OnReadyFunc) error {
 		}
 		s.server = grpc.NewServer(grpc.Creds(creds))
 	} else {
+		fmt.Printf("Listening GRPC on %v\n", p)
 		s.server = grpc.NewServer()
 	}
 	proto.RegisterEchoTestServiceServer(s.server, &grpcHandler{
@@ -122,18 +123,25 @@ type grpcHandler struct {
 }
 
 func (h *grpcHandler) Echo(ctx context.Context, req *proto.EchoRequest) (*proto.EchoResponse, error) {
+	defer common.Metrics.GrpcRequests.With(common.PortLabel.Value(strconv.Itoa(h.Port.Port))).Increment()
+	host := "-"
 	body := bytes.Buffer{}
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if ok {
 		for key, values := range md {
 			field := response.Field(key)
 			if key == ":authority" {
 				field = response.HostField
+				host = values[0]
 			}
 			for _, value := range values {
 				writeField(&body, field, value)
 			}
 		}
 	}
+
+	log.Infof("GRPC Request:\n  Host: %s\n  Message: %s\n  Headers: %v\n", host, req.GetMessage(), md)
+
 	portNumber := 0
 	if h.Port != nil {
 		portNumber = h.Port.Port
@@ -142,7 +150,8 @@ func (h *grpcHandler) Echo(ctx context.Context, req *proto.EchoRequest) (*proto.
 	writeField(&body, response.StatusCodeField, response.StatusCodeOK)
 	writeField(&body, response.ServiceVersionField, h.Version)
 	writeField(&body, response.ServicePortField, strconv.Itoa(portNumber))
-	writeField(&body, response.Field("Echo"), req.GetMessage())
+	writeField(&body, response.ClusterField, h.Cluster)
+	writeField(&body, "Echo", req.GetMessage())
 
 	if hostname, err := os.Hostname(); err == nil {
 		writeField(&body, response.HostnameField, hostname)

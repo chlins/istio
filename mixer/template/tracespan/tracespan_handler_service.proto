@@ -48,7 +48,7 @@ syntax = "proto3";
 //       source.version: source.labels["version"] | ""
 // ```
 // 
-// See also: [Distributed Tracing](https://istio.io/docs/tasks/telemetry/distributed-tracing/)
+// See also: [Distributed Tracing](https://istio.io/docs/tasks/observability/distributed-tracing/)
 // for information on tracing within Istio.
 //
 // TraceSpan represents an individual span within a distributed trace.
@@ -72,6 +72,7 @@ option (istio.mixer.adapter.model.v1beta1.template_name) = "tracespan";
 option (gogoproto.goproto_getters_all) = false;
 option (gogoproto.equal_all) = false;
 option (gogoproto.gostring_all) = false;
+option (gogoproto.stable_marshaler_all) = true;
 
 // HandleTraceSpanService is implemented by backends that wants to handle request-time 'tracespan' instances.
 service HandleTraceSpanService {

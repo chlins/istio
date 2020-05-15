@@ -98,7 +98,7 @@ func TestSendCSRAgainstLocalInstance(t *testing.T) {
 		"IstioCAAddress is incorrect": {
 			caAddress:   lis.Addr().String() + "1",
 			dialOptions: []grpc.DialOption{grpc.WithInsecure()},
-			expectedErr: "rpc error: code = Unavailable desc = all SubConns are in TransientFailure",
+			expectedErr: "rpc error: code = Unavailable",
 		},
 		"Without Insecure option": {
 			caAddress:   lis.Addr().String(),
@@ -117,7 +117,7 @@ func TestSendCSRAgainstLocalInstance(t *testing.T) {
 		csr, _, err := util.GenCSR(util.CertOptions{
 			Host:       "service1",
 			Org:        "orgA",
-			RSAKeySize: 512,
+			RSAKeySize: 2048,
 		})
 		if err != nil {
 			t.Errorf("CSR generation failure (%v)", err)

@@ -23,10 +23,12 @@ import (
 	"strings"
 	"time"
 
-	envoyAdmin "github.com/envoyproxy/go-control-plane/envoy/admin/v2alpha"
-	"github.com/gogo/protobuf/jsonpb"
+	envoyAdmin "github.com/envoyproxy/go-control-plane/envoy/admin/v3"
+	"github.com/golang/protobuf/jsonpb"
 	"github.com/google/uuid"
 	"github.com/hashicorp/go-multierror"
+
+	"istio.io/istio/pkg/test"
 
 	"istio.io/api/mesh/v1alpha1"
 	"istio.io/istio/pkg/test/docker"
@@ -76,7 +78,7 @@ func newWorkload(e *native.Environment, cfg echo.Config, dumpDir string) (out *w
 	}
 
 	// Get the Docker images for the Echo application.
-	imgs, err := images.Get(e)
+	imgs, err := images.Get()
 	if err != nil {
 		return nil, err
 	}
@@ -97,30 +99,28 @@ func newWorkload(e *native.Environment, cfg echo.Config, dumpDir string) (out *w
 	hostName := fmt.Sprintf("%s-%s", cfg.Service, uuid.New().String())
 
 	// Create a mapping of container to host ports.
-	w.portMap, err = newPortMap(e.PortManager, cfg)
+	w.portMap, err = newPortMap(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	echoArgs := append([]string{
 		"--version", cfg.Version,
+		"--cluster", "0",
 	}, w.portMap.toEchoArgs()...)
 
-	var image docker.Image
+	var image string
 	var cmd []string
 	var env []string
 	var extraHosts []string
 	var capabilities []string
-	if cfg.Annotations.GetBool(echo.SidecarInject) {
-		w.readinessProbe = sidecarReadinessProbe(w.portMap.hostAgentPort)
-
+	if cfg.Subsets[0].Annotations.GetBool(echo.SidecarInject) {
 		image = imgs.Sidecar
 
 		// Need NET_ADMIN for iptables.
 		capabilities = []string{"NET_ADMIN"}
 
-		applicationPorts := w.portMap.applicationPorts()
-		pilotHost := fmt.Sprintf("istio-pilot.%s", e.SystemNamespace)
+		pilotHost := fmt.Sprintf("istiod.%s.svc", e.SystemNamespace)
 
 		pilotAddress := fmt.Sprintf("%s:%d", pilotHost, discoveryPort(cfg.Pilot))
 
@@ -133,11 +133,12 @@ func newWorkload(e *native.Environment, cfg echo.Config, dumpDir string) (out *w
 			fmt.Sprintf("%s:%s", pilotHost, ip.String()),
 		}
 
-		agentArgs := fmt.Sprintf("--proxyLogLevel debug --statusPort %d --domain %s --trust-domain %s --applicationPorts %s",
-			agentStatusPort, e.Domain, e.Domain, applicationPorts)
+		agentArgs := fmt.Sprintf("--proxyLogLevel debug --statusPort %d --domain %s --trust-domain %s",
+			agentStatusPort, e.Domain, e.Domain)
 
 		metaJSONLabels := fmt.Sprintf("{\"app\":\"%s\"}", cfg.Service)
 		interceptionMode := "REDIRECT"
+		propCert := "./var/lib/istio/default"
 
 		env = append(env,
 			"ECHO_ARGS="+strings.Join(echoArgs, " "),
@@ -147,12 +148,14 @@ func newWorkload(e *native.Environment, cfg echo.Config, dumpDir string) (out *w
 			"POD_NAME="+hostName,
 			"POD_NAMESPACE="+cfg.Namespace.Name(),
 			"PILOT_ADDRESS="+pilotAddress,
-			"CITADEL_ADDRESS=istio-citadel:8060", // TODO: need local citadel
+			"CA_ADDR="+pilotAddress,
+			"PROV_CERT="+propCert,
 			"ENVOY_PORT=15001",
 			"ENVOY_USER=istio-proxy",
+			"PROXY_UID=1337",
+			"PROXY_GID=1337",
 			"ISTIO_AGENT_FLAGS="+agentArgs,
 			"ISTIO_INBOUND_INTERCEPTION_MODE="+interceptionMode,
-			"ISTIO_INBOUND_PORTS="+applicationPorts,
 			"ISTIO_SERVICE_CIDR=*",
 			"ISTIO_CP_AUTH="+authPolicy.String(),
 			"ISTIO_META_ISTIO_PROXY_SHA="+envoy.LatestStableSHA,
@@ -160,11 +163,8 @@ func newWorkload(e *native.Environment, cfg echo.Config, dumpDir string) (out *w
 			"ISTIO_META_CONFIG_NAMESPACE="+cfg.Namespace.Name(),
 			"ISTIO_METAJSON_LABELS="+metaJSONLabels,
 			"ISTIO_META_INTERCEPTION_MODE="+interceptionMode,
-			"ISTIO_META_INCLUDE_INBOUND_PORTS"+applicationPorts,
 		)
 	} else {
-		w.readinessProbe = noSidecarReadinessProbe(w.portMap.http().hostPort)
-
 		image = imgs.NoSidecar
 
 		// Add arguments for the entry point.
@@ -197,8 +197,22 @@ func newWorkload(e *native.Environment, cfg echo.Config, dumpDir string) (out *w
 		return nil, fmt.Errorf("failed creating Docker container: %v\nContainer Config:\n%+v",
 			err, containerCfg)
 	}
+	for i, p := range w.portMap.ports {
+		hp := w.container.PortMap[docker.ContainerPort(p.containerPort.ServicePort)]
+		p.hostPort = uint16(hp)
+		w.portMap.ports[i] = p
+	}
+	w.portMap.hostAgentPort = uint16(w.container.PortMap[docker.ContainerPort(agentStatusPort)])
 
-	if cfg.Annotations.GetBool(echo.SidecarInject) {
+	// Set up readiness probe
+	// This must be done after container starts, so the ports are allocated
+	if cfg.Subsets[0].Annotations.GetBool(echo.SidecarInject) {
+		w.readinessProbe = sidecarReadinessProbe(w.portMap.hostAgentPort)
+	} else {
+		w.readinessProbe = noSidecarReadinessProbe(w.portMap.http().hostPort)
+	}
+
+	if cfg.Subsets[0].Annotations.GetBool(echo.SidecarInject) {
 		if w.sidecar, err = newSidecar(w.container); err != nil {
 			return nil, fmt.Errorf("failed creating sidecar for Echo Container %s: %v",
 				w.container.Name, err)
@@ -215,7 +229,7 @@ func (w *workload) waitForReady() (err error) {
 	}
 
 	// Now create the GRPC client.
-	if w.Instance, err = client.New(fmt.Sprintf("%s:%d", localhost, w.portMap.grpc().hostPort)); err != nil {
+	if w.Instance, err = client.New(fmt.Sprintf("%s:%d", localhost, w.portMap.grpc().hostPort), nil); err != nil {
 		return fmt.Errorf("failed creating GRPC client for Echo container %s: %v", w.container.Name, err)
 	}
 	return nil
@@ -259,6 +273,7 @@ func (w *workload) Dump() {
 		srcFiles := []string{
 			"/var/log/istio/istio.log",
 			"/var/log/istio/istio.err.log",
+			"/var/log/istio/access.log",
 		}
 
 		for _, srcFile := range srcFiles {
@@ -298,4 +313,17 @@ func discoveryPort(p pilot.Instance) int {
 		return p.(pilot.Native).GetSecureDiscoveryAddress().Port
 	}
 	return p.(pilot.Native).GetDiscoveryAddress().Port
+}
+
+func (w *workload) Logs() (string, error) {
+	return w.container.Logs()
+}
+
+func (w *workload) LogsOrFail(t test.Failer) string {
+	t.Helper()
+	logs, err := w.Logs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return logs
 }

@@ -22,9 +22,10 @@ import (
 
 	"istio.io/api/mesh/v1alpha1"
 
-	"istio.io/istio/galley/pkg/config/event"
-	"istio.io/istio/galley/pkg/config/meshcfg"
+	"istio.io/istio/galley/pkg/config/mesh"
 	"istio.io/istio/galley/pkg/config/scope"
+	"istio.io/istio/pkg/config/event"
+	"istio.io/istio/pkg/config/schema/collections"
 )
 
 type sessionState string
@@ -53,8 +54,8 @@ const (
 	terminating = sessionState("terminating")
 )
 
-// session represents a config processing session. It is a stateful controller type whose main responsibility is to manage
-// state transitions and react to the events that impact lifecycle.
+// session represents a config processing session. It is a stateful controller type whose main responsibility is to
+// manage state transitions and react to the events that impact lifecycle.
 //
 // A session starts with an external request (through the start() method, called by Runtime) which puts the session into
 // the "starting" state. During this phase, the Sources are started, and the events from Sources  start to come in. Once
@@ -188,7 +189,7 @@ func (s *session) terminate() {
 	scope.Processing.Debug("session.terminate: stopping sources...")
 	s.options.Source.Stop()
 
-	scope.Processing.Debug("session.terminate: signalling session termination...")
+	scope.Processing.Debug("session.terminate: signaling session termination...")
 	s.mu.Lock()
 	if s.doneCh != nil {
 		close(s.doneCh)
@@ -221,7 +222,7 @@ func (s *session) handle(e event.Event) {
 	if e.Kind != event.Reset {
 		s.buffer.Handle(e)
 
-		if e.Source == meshcfg.IstioMeshconfig {
+		if e.SourceName() == collections.IstioMeshV1Alpha1MeshConfig.Name() {
 			s.handleMeshEvent(e)
 		}
 		return
@@ -260,6 +261,7 @@ func (s *session) handleMeshEvent(e event.Event) {
 		go s.terminate()
 
 	case starting:
+		scope.Processing.Infof("session.handleMeshEvent: Received initial mesh event, applying it: %+v", e)
 		s.applyMeshEvent(e)
 
 	case buffering:
@@ -280,10 +282,10 @@ func (s *session) applyMeshEvent(e event.Event) {
 	switch e.Kind {
 	case event.Added, event.Updated:
 		scope.Processing.Infof("session.handleMeshEvent: received an add/update mesh config event: %v", e)
-		s.meshCfg = proto.Clone(e.Entry.Item).(*v1alpha1.MeshConfig)
+		s.meshCfg = proto.Clone(e.Resource.Message).(*v1alpha1.MeshConfig)
 	case event.Deleted:
 		scope.Processing.Infof("session.handleMeshEvent: received a delete mesh config event: %v", e)
-		s.meshCfg = meshcfg.Default()
+		s.meshCfg = mesh.DefaultMeshConfig()
 	case event.FullSync:
 		scope.Processing.Infof("session.applyMeshEvent meshSynced: %v => %v", s.meshSynced, true)
 		s.meshSynced = true
@@ -298,4 +300,12 @@ func (s *session) applyMeshEvent(e event.Event) {
 func (s *session) transitionTo(st sessionState) {
 	scope.Processing.Infof("session[%d] %q => %q", s.id, s.state, st)
 	s.state = st
+}
+
+// getState returns the state of session. This is useful for testing/debugging purposes.
+func (s *session) getState() sessionState {
+	s.mu.Lock()
+	st := s.state
+	s.mu.Unlock()
+	return st
 }

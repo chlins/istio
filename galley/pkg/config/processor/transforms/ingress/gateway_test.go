@@ -19,18 +19,23 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"istio.io/istio/galley/pkg/config/collection"
-	"istio.io/istio/galley/pkg/config/event"
-	"istio.io/istio/galley/pkg/config/meshcfg"
+	"istio.io/istio/galley/pkg/config/mesh"
 	"istio.io/istio/galley/pkg/config/processing"
-	"istio.io/istio/galley/pkg/config/processor/metadata"
 	"istio.io/istio/galley/pkg/config/source/kube/rt"
 	"istio.io/istio/galley/pkg/config/testing/fixtures"
+	"istio.io/istio/pkg/config/event"
+	"istio.io/istio/pkg/config/schema"
+	"istio.io/istio/pkg/config/schema/collection"
+	"istio.io/istio/pkg/config/schema/collections"
+	"istio.io/istio/pkg/config/schema/resource"
 )
 
 var (
-	ingressAdapter = rt.DefaultProvider().GetAdapter(metadata.MustGet().KubeSource().Resources().MustFind(
-		"extensions", "Ingress"))
+	ingressAdapter = rt.DefaultProvider().GetAdapter(schema.MustGet().KubeCollections().MustFindByGroupVersionKind(resource.GroupVersionKind{
+		Group:   "extensions",
+		Version: "v1beta1",
+		Kind:    "Ingress",
+	}).Resource())
 )
 
 func TestGateway_Input_Output(t *testing.T) {
@@ -38,8 +43,8 @@ func TestGateway_Input_Output(t *testing.T) {
 
 	xform, _, _ := setupGW(g, processing.ProcessorOptions{})
 
-	g.Expect(xform.Inputs()).To(Equal(collection.Names{metadata.K8SExtensionsV1Beta1Ingresses}))
-	g.Expect(xform.Outputs()).To(Equal(collection.Names{metadata.IstioNetworkingV1Alpha3Gateways}))
+	g.Expect(xform.Inputs()).To(Equal(collection.NewSchemasBuilder().MustAdd(collections.K8SExtensionsV1Beta1Ingresses).Build()))
+	g.Expect(xform.Outputs()).To(Equal(collection.NewSchemasBuilder().MustAdd(collections.IstioNetworkingV1Alpha3Gateways).Build()))
 }
 
 func TestGateway_AddSync(t *testing.T) {
@@ -55,12 +60,12 @@ func TestGateway_AddSync(t *testing.T) {
 	xform.Start()
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.AddFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1()),
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
+		event.AddFor(collections.IstioNetworkingV1Alpha3Gateways, gw1()),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
 	))
 }
 
@@ -76,12 +81,12 @@ func TestGateway_SyncAdd(t *testing.T) {
 	xform.Start()
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
-		event.AddFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1()),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
+		event.AddFor(collections.IstioNetworkingV1Alpha3Gateways, gw1()),
 	))
 }
 
@@ -96,16 +101,16 @@ func TestGateway_AddUpdateDelete(t *testing.T) {
 
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
-	src.Handlers.Handle(event.UpdateFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1v2()))
-	src.Handlers.Handle(event.DeleteForResource(metadata.K8SExtensionsV1Beta1Ingresses, ingress1v2()))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.UpdateFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1v2()))
+	src.Handlers.Handle(event.DeleteForResource(collections.K8SExtensionsV1Beta1Ingresses, ingress1v2()))
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
-		event.AddFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1()),
-		event.UpdateFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1v2()),
-		event.DeleteForResource(metadata.IstioNetworkingV1Alpha3Gateways, gw1v2()),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
+		event.AddFor(collections.IstioNetworkingV1Alpha3Gateways, gw1()),
+		event.UpdateFor(collections.IstioNetworkingV1Alpha3Gateways, gw1v2()),
+		event.DeleteForResource(collections.IstioNetworkingV1Alpha3Gateways, gw1v2()),
 	))
 }
 
@@ -122,11 +127,11 @@ func TestGateway_SyncReset(t *testing.T) {
 	xform.Start()
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
 	src.Handlers.Handle(event.Event{Kind: event.Reset})
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
 		event.Event{Kind: event.Reset},
 	))
 }
@@ -144,11 +149,11 @@ func TestGateway_InvalidEventKind(t *testing.T) {
 	xform.Start()
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
 	src.Handlers.Handle(event.Event{Kind: 55})
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
 	))
 }
 
@@ -157,10 +162,10 @@ func TestGateway_NoListeners(t *testing.T) {
 
 	o := processing.ProcessorOptions{
 		DomainSuffix: "svc.local",
-		MeshConfig:   meshcfg.Default(),
+		MeshConfig:   mesh.DefaultMeshConfig(),
 	}
 
-	xforms := Create(o)
+	xforms := GetProviders().Create(o)
 	g.Expect(xforms).To(HaveLen(2))
 
 	src := &fixtures.Source{}
@@ -170,9 +175,9 @@ func TestGateway_NoListeners(t *testing.T) {
 	xform.Start()
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
 	src.Handlers.Handle(event.Event{Kind: event.Reset})
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
 
 	// No crash
 }
@@ -191,12 +196,12 @@ func TestGateway_DoubleStart(t *testing.T) {
 	xform.Start()
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.AddFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1()),
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
+		event.AddFor(collections.IstioNetworkingV1Alpha3Gateways, gw1()),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
 	))
 }
 
@@ -212,12 +217,12 @@ func TestGateway_DoubleStop(t *testing.T) {
 
 	xform.Start()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.AddFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1()),
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
+		event.AddFor(collections.IstioNetworkingV1Alpha3Gateways, gw1()),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
 	))
 
 	acc.Clear()
@@ -240,12 +245,12 @@ func TestGateway_StartStopStartStop(t *testing.T) {
 
 	xform.Start()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.AddFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1()),
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
+		event.AddFor(collections.IstioNetworkingV1Alpha3Gateways, gw1()),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
 	))
 
 	acc.Clear()
@@ -253,12 +258,12 @@ func TestGateway_StartStopStartStop(t *testing.T) {
 	g.Consistently(acc.Events).Should(BeEmpty())
 
 	xform.Start()
-	src.Handlers.Handle(event.FullSyncFor(metadata.K8SExtensionsV1Beta1Ingresses))
-	src.Handlers.Handle(event.AddFor(metadata.K8SExtensionsV1Beta1Ingresses, ingress1()))
+	src.Handlers.Handle(event.FullSyncFor(collections.K8SExtensionsV1Beta1Ingresses))
+	src.Handlers.Handle(event.AddFor(collections.K8SExtensionsV1Beta1Ingresses, ingress1()))
 
 	g.Eventually(acc.Events).Should(ConsistOf(
-		event.AddFor(metadata.IstioNetworkingV1Alpha3Gateways, gw1()),
-		event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Gateways),
+		event.AddFor(collections.IstioNetworkingV1Alpha3Gateways, gw1()),
+		event.FullSyncFor(collections.IstioNetworkingV1Alpha3Gateways),
 	))
 
 	acc.Clear()
@@ -279,20 +284,20 @@ func TestGateway_InvalidEvent(t *testing.T) {
 	xform.Start()
 	defer xform.Stop()
 
-	src.Handlers.Handle(event.FullSyncFor(metadata.IstioNetworkingV1Alpha3Virtualservices))
+	src.Handlers.Handle(event.FullSyncFor(collections.IstioNetworkingV1Alpha3Virtualservices))
 
 	g.Consistently(acc.Events).Should(BeEmpty())
 }
 
 func setupGW(g *GomegaWithT, o processing.ProcessorOptions) (event.Transformer, *fixtures.Source, *fixtures.Accumulator) {
-	xforms := Create(o)
+	xforms := GetProviders().Create(o)
 	g.Expect(xforms).To(HaveLen(2))
 
 	src := &fixtures.Source{}
 	acc := &fixtures.Accumulator{}
 	xform := xforms[0]
 	src.Dispatch(xform)
-	xform.DispatchFor(metadata.IstioNetworkingV1Alpha3Gateways, acc)
+	xform.DispatchFor(collections.IstioNetworkingV1Alpha3Gateways, acc)
 
 	xform.Start()
 

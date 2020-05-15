@@ -16,6 +16,8 @@ package v2
 import (
 	"google.golang.org/grpc/codes"
 
+	"istio.io/istio/pilot/pkg/model"
+
 	"istio.io/istio/pkg/mcp/status"
 	"istio.io/pkg/monitoring"
 )
@@ -28,7 +30,7 @@ var (
 
 	cdsReject = monitoring.NewGauge(
 		"pilot_xds_cds_reject",
-		"Pilot rejected CSD configs.",
+		"Pilot rejected CDS configs.",
 		monitoring.WithLabels(nodeTag, errTag),
 	)
 
@@ -40,7 +42,13 @@ var (
 
 	edsInstances = monitoring.NewGauge(
 		"pilot_xds_eds_instances",
-		"Instances for each cluster, as of last push. Zero instances is an error.",
+		"Instances for each cluster(grouped by locality), as of last push. Zero instances is an error.",
+		monitoring.WithLabels(clusterTag),
+	)
+
+	edsAllLocalityEndpoints = monitoring.NewGauge(
+		"pilot_xds_eds_all_locality_endpoints",
+		"Network endpoints for each cluster(across all localities), as of last push. Zero endpoints is an error.",
 		monitoring.WithLabels(clusterTag),
 	)
 
@@ -90,35 +98,49 @@ var (
 		monitoring.WithLabels(typeTag),
 	)
 
-	cdsPushes         = pushes.With(typeTag.Value("cds"))
-	cdsSendErrPushes  = pushes.With(typeTag.Value("cds_senderr"))
-	cdsBuildErrPushes = pushes.With(typeTag.Value("cds_builderr"))
-	edsPushes         = pushes.With(typeTag.Value("eds"))
-	edsSendErrPushes  = pushes.With(typeTag.Value("eds_senderr"))
-	ldsPushes         = pushes.With(typeTag.Value("lds"))
-	ldsSendErrPushes  = pushes.With(typeTag.Value("lds_senderr"))
-	ldsBuildErrPushes = pushes.With(typeTag.Value("lds_builderr"))
-	rdsPushes         = pushes.With(typeTag.Value("rds"))
-	rdsSendErrPushes  = pushes.With(typeTag.Value("rds_senderr"))
-	rdsBuildErrPushes = pushes.With(typeTag.Value("rds_builderr"))
+	cdsPushes        = pushes.With(typeTag.Value("cds"))
+	cdsSendErrPushes = pushes.With(typeTag.Value("cds_senderr"))
+	edsPushes        = pushes.With(typeTag.Value("eds"))
+	edsSendErrPushes = pushes.With(typeTag.Value("eds_senderr"))
+	ldsPushes        = pushes.With(typeTag.Value("lds"))
+	ldsSendErrPushes = pushes.With(typeTag.Value("lds_senderr"))
+	rdsPushes        = pushes.With(typeTag.Value("rds"))
+	rdsSendErrPushes = pushes.With(typeTag.Value("rds_senderr"))
+
+	apiPushes        = pushes.With(typeTag.Value("api"))
+	apiSendErrPushes = pushes.With(typeTag.Value("api_senderr"))
+
+	pushTime = monitoring.NewDistribution(
+		"pilot_xds_push_time",
+		"Total time in seconds Pilot takes to push lds, rds, cds and eds.",
+		[]float64{.01, .1, 1, 3, 5, 10, 20, 30},
+		monitoring.WithLabels(typeTag),
+	)
+
+	cdsPushTime = pushTime.With(typeTag.Value("cds"))
+	edsPushTime = pushTime.With(typeTag.Value("eds"))
+	ldsPushTime = pushTime.With(typeTag.Value("lds"))
+	rdsPushTime = pushTime.With(typeTag.Value("rds"))
 
 	// only supported dimension is millis, unfortunately. default to unitdimensionless.
 	proxiesQueueTime = monitoring.NewDistribution(
 		"pilot_proxy_queue_time",
-		"Time a proxy is in the push queue before being dequeued.",
+		"Time in seconds, a proxy is in the push queue before being dequeued.",
 		[]float64{.1, 1, 3, 5, 10, 20, 30},
+	)
+
+	pushTriggers = monitoring.NewSum(
+		"pilot_push_triggers",
+		"Total number of times a push was triggered, labeled by reason for the push.",
+		monitoring.WithLabels(typeTag),
 	)
 
 	// only supported dimension is millis, unfortunately. default to unitdimensionless.
 	proxiesConvergeDelay = monitoring.NewDistribution(
 		"pilot_proxy_convergence_time",
-		"Delay between config change and all proxies converging.",
-		[]float64{1, 3, 5, 10, 20, 30, 50, 100},
+		"Delay in seconds between config change and a proxy receiving all required configuration.",
+		[]float64{.1, .5, 1, 3, 5, 10, 20, 30},
 	)
-	proxiesConvergeDelayCdsErrors = proxiesConvergeDelay.With(errTag.Value("cds"))
-	proxiesConvergeDelayEdsErrors = proxiesConvergeDelay.With(errTag.Value("eds"))
-	proxiesConvergeDelayRdsErrors = proxiesConvergeDelay.With(errTag.Value("rds"))
-	proxiesConvergeDelayLdsErrors = proxiesConvergeDelay.With(errTag.Value("lds"))
 
 	pushContextErrors = monitoring.NewSum(
 		"pilot_xds_push_context_errors",
@@ -136,17 +158,24 @@ var (
 		monitoring.WithLabels(typeTag),
 	)
 
-	inboundConfigUpdates   = inboundUpdates.With(typeTag.Value("config"))
-	inboundEDSUpdates      = inboundUpdates.With(typeTag.Value("eds"))
-	inboundServiceUpdates  = inboundUpdates.With(typeTag.Value("svc"))
-	inboundWorkloadUpdates = inboundUpdates.With(typeTag.Value("workload"))
+	inboundConfigUpdates  = inboundUpdates.With(typeTag.Value("config"))
+	inboundEDSUpdates     = inboundUpdates.With(typeTag.Value("eds"))
+	inboundServiceUpdates = inboundUpdates.With(typeTag.Value("svc"))
+	inboundServiceDeletes = inboundUpdates.With(typeTag.Value("svcdelete"))
 )
+
+func recordPushTriggers(reasons ...model.TriggerReason) {
+	for _, r := range reasons {
+		pushTriggers.With(typeTag.Value(string(r))).Increment()
+	}
+}
 
 func recordSendError(metric monitoring.Metric, err error) {
 	s, ok := status.FromError(err)
-	// Unavailable code will be sent when a connection is closing down. This is very normal,
+	// Unavailable or canceled code will be sent when a connection is closing down. This is very normal,
 	// due to the XDS connection being dropped every 30 minutes, or a pod shutting down.
-	if !ok || s.Code() != codes.Unavailable {
+	isError := s.Code() != codes.Unavailable && s.Code() != codes.Canceled
+	if !ok || isError {
 		metric.Increment()
 	}
 }
@@ -163,20 +192,19 @@ func init() {
 		ldsReject,
 		rdsReject,
 		edsInstances,
+		edsAllLocalityEndpoints,
 		rdsExpiredNonce,
 		totalXDSRejects,
 		monServices,
 		xdsClients,
 		xdsResponseWriteTimeouts,
 		pushes,
+		pushTime,
 		proxiesConvergeDelay,
 		proxiesQueueTime,
-		proxiesConvergeDelayCdsErrors,
-		proxiesConvergeDelayEdsErrors,
-		proxiesConvergeDelayRdsErrors,
-		proxiesConvergeDelayLdsErrors,
 		pushContextErrors,
 		totalXDSInternalErrors,
 		inboundUpdates,
+		pushTriggers,
 	)
 }

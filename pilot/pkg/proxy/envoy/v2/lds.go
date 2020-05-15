@@ -15,24 +15,25 @@
 package v2
 
 import (
-	"fmt"
+	"time"
 
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
-	"github.com/gogo/protobuf/types"
 
 	"istio.io/istio/pilot/pkg/model"
+	"istio.io/istio/pilot/pkg/networking/util"
 )
 
 func (s *DiscoveryServer) pushLds(con *XdsConnection, push *model.PushContext, version string) error {
 	// TODO: Modify interface to take services, and config instead of making library query registry
-
-	rawListeners := s.generateRawListeners(con, push)
+	pushStart := time.Now()
+	rawListeners := s.ConfigGenerator.BuildListeners(con.node, push)
 
 	if s.DebugConfigs {
 		con.LDSListeners = rawListeners
 	}
-	response := ldsDiscoveryResponse(rawListeners, version)
+	response := ldsDiscoveryResponse(rawListeners, version, push.Version, con.RequestedTypes.LDS)
 	err := con.send(response)
+	ldsPushTime.Record(time.Since(pushStart).Seconds())
 	if err != nil {
 		adsLog.Warnf("LDS: Send failure %s: %v", con.ConID, err)
 		recordSendError(ldsSendErrPushes, err)
@@ -40,33 +41,16 @@ func (s *DiscoveryServer) pushLds(con *XdsConnection, push *model.PushContext, v
 	}
 	ldsPushes.Increment()
 
-	adsLog.Infof("LDS: PUSH for node:%s listeners:%d", con.modelNode.ID, len(rawListeners))
+	adsLog.Infof("LDS: PUSH for node:%s listeners:%d", con.node.ID, len(rawListeners))
 	return nil
 }
 
-func (s *DiscoveryServer) generateRawListeners(con *XdsConnection, push *model.PushContext) []*xdsapi.Listener {
-	rawListeners := s.ConfigGenerator.BuildListeners(s.Env, con.modelNode, push)
-
-	for _, l := range rawListeners {
-		if err := l.Validate(); err != nil {
-			retErr := fmt.Errorf("LDS: Generated invalid listener for node %v: %v", con.modelNode, err)
-			adsLog.Errorf("LDS: Generated invalid listener for node:%s: %v, %v", con.modelNode.ID, err, l)
-			ldsBuildErrPushes.Increment()
-			// Generating invalid listeners is a bug.
-			// Panic instead of trying to recover from that, since we can't
-			// assume anything about the state.
-			panic(retErr.Error())
-		}
-	}
-	return rawListeners
-}
-
 // LdsDiscoveryResponse returns a list of listeners for the given environment and source node.
-func ldsDiscoveryResponse(ls []*xdsapi.Listener, version string) *xdsapi.DiscoveryResponse {
+func ldsDiscoveryResponse(ls []*xdsapi.Listener, version, noncePrefix, typeURL string) *xdsapi.DiscoveryResponse {
 	resp := &xdsapi.DiscoveryResponse{
-		TypeUrl:     ListenerType,
+		TypeUrl:     typeURL,
 		VersionInfo: version,
-		Nonce:       nonce(),
+		Nonce:       nonce(noncePrefix),
 	}
 	for _, ll := range ls {
 		if ll == nil {
@@ -74,7 +58,8 @@ func ldsDiscoveryResponse(ls []*xdsapi.Listener, version string) *xdsapi.Discove
 			totalXDSInternalErrors.Increment()
 			continue
 		}
-		lr, _ := types.MarshalAny(ll)
+		lr := util.MessageToAny(ll)
+		lr.TypeUrl = typeURL
 		resp.Resources = append(resp.Resources, lr)
 	}
 

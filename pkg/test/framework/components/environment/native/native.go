@@ -21,29 +21,29 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/hashicorp/go-multierror"
 
+	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/test/docker"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/components/environment/api"
 	"istio.io/istio/pkg/test/framework/resource"
-	"istio.io/istio/pkg/test/util/reserveport"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 )
 
 const (
 	systemNamespace = "istio-system"
-	domain          = "cluster.local"
+	domain          = constants.DefaultKubernetesDomain
 
 	networkLabelKey   = "app"
 	networkLabelValue = "istio-test"
 )
 
+var _ resource.Environment = &Environment{}
 var _ io.Closer = &Environment{}
 
 // Environment for testing natively on the host machine. It implements api.Environment, and also
 // hosts publicly accessible methods that are specific to local environment.
 type Environment struct {
 	id  resource.ID
-	ctx api.Context
+	ctx resource.Context
 
 	// SystemNamespace is the namespace used for all Istio system components.
 	SystemNamespace string
@@ -51,30 +51,26 @@ type Environment struct {
 	// Domain used by components in the native environment.
 	Domain string
 
-	// PortManager provides free ports on-demand.
-	PortManager reserveport.PortManager
-
 	// Docker resources, Lazy-initialized.
-	dockerClient  *client.Client
-	network       *docker.Network
-	imageRegistry *ImageRegistry
-	mux           sync.Mutex
+	dockerClient *client.Client
+	network      *docker.Network
+	mux          sync.Mutex
+	Cluster      resource.Cluster
 }
 
 var _ resource.Environment = &Environment{}
 
 // New returns a new native environment.
-func New(ctx api.Context) (resource.Environment, error) {
-	portMgr, err := reserveport.NewPortManager()
+func New(ctx resource.Context) (resource.Environment, error) {
+	cluster, err := NewCluster(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	e := &Environment{
 		ctx:             ctx,
 		SystemNamespace: systemNamespace,
 		Domain:          domain,
-		PortManager:     portMgr,
+		Cluster:         cluster,
 	}
 	e.id = ctx.TrackResource(e)
 
@@ -96,6 +92,15 @@ func (e *Environment) Case(name environment.Name, fn func()) {
 	}
 }
 
+func (e *Environment) IsMulticluster() bool {
+	// Multicluster not supported natively.
+	return false
+}
+
+func (e *Environment) Clusters() []resource.Cluster {
+	return []resource.Cluster{e.Cluster}
+}
+
 // ID implements resource.Instance
 func (e *Environment) ID() resource.ID {
 	return e.id
@@ -107,7 +112,7 @@ func (e *Environment) DockerClient() (*client.Client, error) {
 
 	if e.dockerClient == nil {
 		// Create a shared network for Docker containers.
-		c, err := client.NewEnvClient()
+		c, err := client.NewClientWithOpts(client.FromEnv)
 		if err != nil {
 			return nil, err
 		}
@@ -145,40 +150,14 @@ func (e *Environment) Network() (*docker.Network, error) {
 	return e.network, nil
 }
 
-func (e *Environment) ImageRegistry() (*ImageRegistry, error) {
-	c, err := e.DockerClient()
-	if err != nil {
-		return nil, err
-	}
-
-	e.mux.Lock()
-	defer e.mux.Unlock()
-
-	if e.imageRegistry == nil {
-		e.imageRegistry = newImageRegistry(c)
-	}
-
-	return e.imageRegistry, nil
-}
-
 func (e *Environment) Close() (err error) {
 	e.mux.Lock()
 	defer e.mux.Unlock()
-
-	if e.PortManager != nil {
-		err = multierror.Append(err, e.PortManager.Close()).ErrorOrNil()
-	}
-	e.PortManager = nil
 
 	if e.network != nil {
 		err = multierror.Append(err, e.network.Close()).ErrorOrNil()
 	}
 	e.network = nil
-
-	if e.imageRegistry != nil {
-		err = multierror.Append(err, e.imageRegistry.Close()).ErrorOrNil()
-	}
-	e.imageRegistry = nil
 
 	if e.dockerClient != nil {
 		err = multierror.Append(err, e.dockerClient.Close()).ErrorOrNil()

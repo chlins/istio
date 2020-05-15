@@ -18,23 +18,25 @@ import (
 	"net/http"
 	"testing"
 
+	"istio.io/istio/pkg/test/framework/label"
+
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/bookinfo"
 	util "istio.io/istio/tests/integration/mixer"
 )
 
 func TestWhiteListing(t *testing.T) {
-	framework.Run(t, func(ctx framework.TestContext) {
+	framework.NewTest(t).Label(label.Flaky).Run(func(ctx framework.TestContext) {
 		// Verify you can access productpage right now.
 		util.SendTrafficAndWaitForExpectedStatus(ing, t, "Sending traffic...", "", 2, http.StatusOK)
 
-		g.ApplyConfigOrFail(
+		ctx.ApplyConfigOrFail(
 			t,
-			bookinfoNs,
+			bookinfoNs.Name(),
 			bookinfo.PolicyDenyIPRule.LoadWithNamespaceOrFail(t, bookinfoNs.Name()))
-		defer g.DeleteConfigOrFail(
+		defer ctx.DeleteConfigOrFail(
 			t,
-			bookinfoNs,
+			bookinfoNs.Name(),
 			bookinfo.PolicyDenyIPRule.LoadWithNamespaceOrFail(t, bookinfoNs.Name()))
 		util.AllowRuleSync(t)
 

@@ -16,6 +16,8 @@ package istioctl
 
 import (
 	"bytes"
+	"strings"
+	"testing"
 
 	"istio.io/istio/istioctl/cmd"
 
@@ -26,12 +28,10 @@ import (
 type nativeComponent struct {
 	config Config
 	id     resource.ID
-	ctx    resource.Context
 }
 
 func newNative(ctx resource.Context, config Config) Instance {
 	n := &nativeComponent{
-		ctx:    ctx,
 		config: config,
 	}
 	n.id = ctx.TrackResource(n)
@@ -44,11 +44,25 @@ func (c *nativeComponent) ID() resource.ID {
 	return c.id
 }
 
-// Invoke gets the discovery address for pilot.
-func (c *nativeComponent) Invoke(args []string) (string, error) {
+// Invoke implements Instance
+func (c *nativeComponent) Invoke(args []string) (string, string, error) {
 	var out bytes.Buffer
+	var err bytes.Buffer
 	rootCmd := cmd.GetRootCmd(args)
-	rootCmd.SetOutput(&out)
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&err)
 	fErr := rootCmd.Execute()
-	return out.String(), fErr
+	return out.String(), err.String(), fErr
+}
+
+// InvokeOrFail implements Instance
+func (c *nativeComponent) InvokeOrFail(t *testing.T, args []string) (string, string) {
+	output, stderr, err := c.Invoke(args)
+	if err != nil {
+		t.Logf("Unwanted exception for 'istioctl %s': %v", strings.Join(args, " "), err)
+		t.Logf("Output:\n%v", output)
+		t.Logf("Error:\n%v", stderr)
+		t.FailNow()
+	}
+	return output, stderr
 }

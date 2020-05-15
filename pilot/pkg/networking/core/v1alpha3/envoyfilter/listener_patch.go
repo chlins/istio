@@ -18,46 +18,73 @@ import (
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	xdslistener "github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
 	http_conn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
-	xdsutil "github.com/envoyproxy/go-control-plane/pkg/util"
+	"github.com/envoyproxy/go-control-plane/pkg/conversion"
+	xdsutil "github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/gogo/protobuf/proto"
-	"github.com/gogo/protobuf/types"
+	"github.com/golang/protobuf/ptypes"
+	"github.com/golang/protobuf/ptypes/any"
+
+	"istio.io/pkg/log"
 
 	networking "istio.io/api/networking/v1alpha3"
+
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/pkg/networking/util"
+	"istio.io/istio/pilot/pkg/util/runtime"
+)
+
+const (
+	// VirtualOutboundListenerName is the name for traffic capture listener
+	VirtualOutboundListenerName = "virtualOutbound"
+
+	// VirtualInboundListenerName is the name for traffic capture listener
+	VirtualInboundListenerName = "virtualInbound"
 )
 
 // ApplyListenerPatches applies patches to LDS output
-func ApplyListenerPatches(patchContext networking.EnvoyFilter_PatchContext,
-	proxy *model.Proxy, push *model.PushContext, listeners []*xdsapi.Listener, skipAdds bool) []*xdsapi.Listener {
+func ApplyListenerPatches(
+	patchContext networking.EnvoyFilter_PatchContext,
+	proxy *model.Proxy,
+	push *model.PushContext,
+	listeners []*xdsapi.Listener,
+	skipAdds bool) (out []*xdsapi.Listener) {
+	defer runtime.HandleCrash(func() {
+		log.Errorf("listeners patch caused panic, so the patches did not take effect")
+	})
+	// In case the patches cause panic, use the listeners generated before to reduce the influence.
+	out = listeners
 
-	envoyFilterWrappers := push.EnvoyFilters(proxy)
-	return doListenerListOperation(proxy, patchContext, envoyFilterWrappers, listeners, skipAdds)
+	envoyFilterWrapper := push.EnvoyFilters(proxy)
+	if envoyFilterWrapper == nil {
+		return
+	}
+
+	return doListenerListOperation(patchContext, envoyFilterWrapper, listeners, skipAdds)
 }
 
-func doListenerListOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
-	envoyFilterWrappers []*model.EnvoyFilterWrapper,
-	listeners []*xdsapi.Listener, skipAdds bool) []*xdsapi.Listener {
+func doListenerListOperation(
+	patchContext networking.EnvoyFilter_PatchContext,
+	envoyFilterWrapper *model.EnvoyFilterWrapper,
+	listeners []*xdsapi.Listener,
+	skipAdds bool) []*xdsapi.Listener {
 	listenersRemoved := false
-	for _, efw := range envoyFilterWrappers {
-		// do all the changes for a single envoy filter crd object. [including adds]
-		// then move on to the next one
 
-		// only removes/merges plus next level object operations [add/remove/merge]
-		for _, listener := range listeners {
-			if listener.Name == "" {
-				// removed by another op
-				continue
-			}
-			doListenerOperation(proxy, patchContext, efw.Patches, listener, &listenersRemoved)
-		}
-		// adds at listener level if enabled
-		if skipAdds {
+	// do all the changes for a single envoy filter crd object. [including adds]
+	// then move on to the next one
+
+	// only removes/merges plus next level object operations [add/remove/merge]
+	for _, listener := range listeners {
+		if listener.Name == "" {
+			// removed by another op
 			continue
 		}
-		for _, cp := range efw.Patches[networking.EnvoyFilter_LISTENER] {
+		doListenerOperation(patchContext, envoyFilterWrapper.Patches, listener, &listenersRemoved)
+	}
+	// adds at listener level if enabled
+	if !skipAdds {
+		for _, cp := range envoyFilterWrapper.Patches[networking.EnvoyFilter_LISTENER] {
 			if cp.Operation == networking.EnvoyFilter_Patch_ADD {
-				if !commonConditionMatch(proxy, patchContext, cp) {
+				if !commonConditionMatch(patchContext, cp) {
 					continue
 				}
 
@@ -67,6 +94,7 @@ func doListenerListOperation(proxy *model.Proxy, patchContext networking.EnvoyFi
 			}
 		}
 	}
+
 	if listenersRemoved {
 		tempArray := make([]*xdsapi.Listener, 0, len(listeners))
 		for _, l := range listeners {
@@ -79,11 +107,11 @@ func doListenerListOperation(proxy *model.Proxy, patchContext networking.EnvoyFi
 	return listeners
 }
 
-func doListenerOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func doListenerOperation(patchContext networking.EnvoyFilter_PatchContext,
 	patches map[networking.EnvoyFilter_ApplyTo][]*model.EnvoyFilterConfigPatchWrapper,
 	listener *xdsapi.Listener, listenersRemoved *bool) {
 	for _, cp := range patches[networking.EnvoyFilter_LISTENER] {
-		if !commonConditionMatch(proxy, patchContext, cp) ||
+		if !commonConditionMatch(patchContext, cp) ||
 			!listenerMatch(listener, cp) {
 			continue
 		}
@@ -98,10 +126,10 @@ func doListenerOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter
 		}
 	}
 
-	doFilterChainListOperation(proxy, patchContext, patches, listener)
+	doFilterChainListOperation(patchContext, patches, listener)
 }
 
-func doFilterChainListOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func doFilterChainListOperation(patchContext networking.EnvoyFilter_PatchContext,
 	patches map[networking.EnvoyFilter_ApplyTo][]*model.EnvoyFilterConfigPatchWrapper,
 	listener *xdsapi.Listener) {
 	filterChainsRemoved := false
@@ -109,11 +137,11 @@ func doFilterChainListOperation(proxy *model.Proxy, patchContext networking.Envo
 		if fc.Filters == nil {
 			continue
 		}
-		doFilterChainOperation(proxy, patchContext, patches, listener, listener.FilterChains[i], &filterChainsRemoved)
+		doFilterChainOperation(patchContext, patches, listener, listener.FilterChains[i], &filterChainsRemoved)
 	}
 	for _, cp := range patches[networking.EnvoyFilter_FILTER_CHAIN] {
 		if cp.Operation == networking.EnvoyFilter_Patch_ADD {
-			if !commonConditionMatch(proxy, patchContext, cp) ||
+			if !commonConditionMatch(patchContext, cp) ||
 				!listenerMatch(listener, cp) {
 				continue
 			}
@@ -131,12 +159,12 @@ func doFilterChainListOperation(proxy *model.Proxy, patchContext networking.Envo
 	}
 }
 
-func doFilterChainOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func doFilterChainOperation(patchContext networking.EnvoyFilter_PatchContext,
 	patches map[networking.EnvoyFilter_ApplyTo][]*model.EnvoyFilterConfigPatchWrapper,
 	listener *xdsapi.Listener,
 	fc *xdslistener.FilterChain, filterChainRemoved *bool) {
 	for _, cp := range patches[networking.EnvoyFilter_FILTER_CHAIN] {
-		if !commonConditionMatch(proxy, patchContext, cp) ||
+		if !commonConditionMatch(patchContext, cp) ||
 			!listenerMatch(listener, cp) ||
 			!filterChainMatch(fc, cp) {
 			continue
@@ -150,10 +178,10 @@ func doFilterChainOperation(proxy *model.Proxy, patchContext networking.EnvoyFil
 			proto.Merge(fc, cp.Value)
 		}
 	}
-	doNetworkFilterListOperation(proxy, patchContext, patches, listener, fc)
+	doNetworkFilterListOperation(patchContext, patches, listener, fc)
 }
 
-func doNetworkFilterListOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func doNetworkFilterListOperation(patchContext networking.EnvoyFilter_PatchContext,
 	patches map[networking.EnvoyFilter_ApplyTo][]*model.EnvoyFilterConfigPatchWrapper,
 	listener *xdsapi.Listener, fc *xdslistener.FilterChain) {
 	networkFiltersRemoved := false
@@ -161,10 +189,10 @@ func doNetworkFilterListOperation(proxy *model.Proxy, patchContext networking.En
 		if filter.Name == "" {
 			continue
 		}
-		doNetworkFilterOperation(proxy, patchContext, patches, listener, fc, fc.Filters[i], &networkFiltersRemoved)
+		doNetworkFilterOperation(patchContext, patches, listener, fc, fc.Filters[i], &networkFiltersRemoved)
 	}
 	for _, cp := range patches[networking.EnvoyFilter_NETWORK_FILTER] {
-		if !commonConditionMatch(proxy, patchContext, cp) ||
+		if !commonConditionMatch(patchContext, cp) ||
 			!listenerMatch(listener, cp) ||
 			!filterChainMatch(fc, cp) {
 			continue
@@ -191,13 +219,14 @@ func doNetworkFilterListOperation(proxy *model.Proxy, patchContext networking.En
 				continue
 			}
 
-			fc.Filters = append(fc.Filters, proto.Clone(cp.Value).(*xdslistener.Filter))
+			clonedVal := proto.Clone(cp.Value).(*xdslistener.Filter)
+			fc.Filters = append(fc.Filters, clonedVal)
 			if insertPosition < len(fc.Filters)-1 {
 				copy(fc.Filters[insertPosition+1:], fc.Filters[insertPosition:])
-				fc.Filters[insertPosition] = proto.Clone(cp.Value).(*xdslistener.Filter)
+				fc.Filters[insertPosition] = clonedVal
 			}
-		} else if cp.Operation == networking.EnvoyFilter_Patch_INSERT_BEFORE {
-			// insert before without a filter match is same as insert in the beginning
+		} else if cp.Operation == networking.EnvoyFilter_Patch_INSERT_BEFORE || cp.Operation == networking.EnvoyFilter_Patch_INSERT_FIRST {
+			// insert before/first without a filter match is same as insert in the beginning
 			if !hasNetworkFilterMatch(cp) {
 				fc.Filters = append([]*xdslistener.Filter{proto.Clone(cp.Value).(*xdslistener.Filter)}, fc.Filters...)
 				continue
@@ -211,12 +240,20 @@ func doNetworkFilterListOperation(proxy *model.Proxy, patchContext networking.En
 				}
 			}
 
+			// If matching filter is not found, then don't insert and continue.
 			if insertPosition == -1 {
 				continue
 			}
-			fc.Filters = append(fc.Filters, proto.Clone(cp.Value).(*xdslistener.Filter))
+
+			// In case of INSERT_FIRST, if a match is found, still insert it at the top of the filterchain.
+			if cp.Operation == networking.EnvoyFilter_Patch_INSERT_FIRST {
+				insertPosition = 0
+			}
+
+			clonedVal := proto.Clone(cp.Value).(*xdslistener.Filter)
+			fc.Filters = append(fc.Filters, clonedVal)
 			copy(fc.Filters[insertPosition+1:], fc.Filters[insertPosition:])
-			fc.Filters[insertPosition] = proto.Clone(cp.Value).(*xdslistener.Filter)
+			fc.Filters[insertPosition] = clonedVal
 		}
 	}
 	if networkFiltersRemoved {
@@ -230,12 +267,12 @@ func doNetworkFilterListOperation(proxy *model.Proxy, patchContext networking.En
 	}
 }
 
-func doNetworkFilterOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func doNetworkFilterOperation(patchContext networking.EnvoyFilter_PatchContext,
 	patches map[networking.EnvoyFilter_ApplyTo][]*model.EnvoyFilterConfigPatchWrapper,
 	listener *xdsapi.Listener, fc *xdslistener.FilterChain,
 	filter *xdslistener.Filter, networkFilterRemoved *bool) {
 	for _, cp := range patches[networking.EnvoyFilter_NETWORK_FILTER] {
-		if !commonConditionMatch(proxy, patchContext, cp) ||
+		if !commonConditionMatch(patchContext, cp) ||
 			!listenerMatch(listener, cp) ||
 			!filterChainMatch(fc, cp) ||
 			!networkFilterMatch(filter, cp) {
@@ -247,26 +284,66 @@ func doNetworkFilterOperation(proxy *model.Proxy, patchContext networking.EnvoyF
 			// nothing more to do in other patches as we removed this filter
 			return
 		} else if cp.Operation == networking.EnvoyFilter_Patch_MERGE {
-			proto.Merge(filter, cp.Value)
+			// proto merge doesn't work well when merging two filters with ANY typed configs
+			// especially when the incoming cp.Value is a struct that could contain the json config
+			// of an ANY typed filter. So convert our filter's typed config to Struct (retaining the any
+			// typed output of json)
+			if filter.GetTypedConfig() == nil {
+				// TODO(rshriram): fixme
+				// skip this op as we would possibly have to do a merge of Any with struct
+				// which doesn't seem to work well.
+				continue
+			}
+			userFilter := cp.Value.(*xdslistener.Filter)
+			var err error
+			// we need to be able to overwrite filter names or simply empty out a filter's configs
+			// as they could be supplied through per route filter configs
+			filterName := filter.Name
+			if userFilter.Name != "" {
+				filterName = userFilter.Name
+			}
+			var retVal *any.Any
+			if userFilter.GetTypedConfig() != nil {
+				// user has any typed struct
+				// The type may not match up exactly. For example, if we use v2 internally but they use v3.
+				// Assuming they are not using deprecated/new fields, we can safely swap out the TypeUrl
+				// If we did not do this, proto.Merge below will panic (which is recovered), so even though this
+				// is not 100% reliable its better than doing nothing
+				if userFilter.GetTypedConfig().TypeUrl != filter.GetTypedConfig().TypeUrl {
+					userFilter.ConfigType.(*xdslistener.Filter_TypedConfig).TypedConfig.TypeUrl = filter.GetTypedConfig().TypeUrl
+				}
+				if retVal, err = util.MergeAnyWithAny(filter.GetTypedConfig(), userFilter.GetTypedConfig()); err != nil {
+					retVal = filter.GetTypedConfig()
+				}
+			} else if userFilter.GetConfig() != nil { //nolint:staticcheck
+				if retVal, err = util.MergeAnyWithStruct(filter.GetTypedConfig(), userFilter.GetConfig()); err != nil { //nolint:staticcheck
+					retVal = filter.GetTypedConfig()
+				}
+			}
+			filter.Name = filterName
+			if retVal != nil {
+				filter.ConfigType = &xdslistener.Filter_TypedConfig{TypedConfig: retVal}
+			}
 		}
 	}
 	if filter.Name == xdsutil.HTTPConnectionManager {
-		doHTTPFilterListOperation(proxy, patchContext, patches, listener, fc, filter)
+		doHTTPFilterListOperation(patchContext, patches, listener, fc, filter)
 	}
 }
 
-func doHTTPFilterListOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func doHTTPFilterListOperation(patchContext networking.EnvoyFilter_PatchContext,
 	patches map[networking.EnvoyFilter_ApplyTo][]*model.EnvoyFilterConfigPatchWrapper,
 	listener *xdsapi.Listener, fc *xdslistener.FilterChain, filter *xdslistener.Filter) {
 	hcm := &http_conn.HttpConnectionManager{}
 	if filter.GetTypedConfig() != nil {
-		if err := types.UnmarshalAny(filter.GetTypedConfig(), hcm); err != nil {
+		if err := ptypes.UnmarshalAny(filter.GetTypedConfig(), hcm); err != nil {
 			return
 			// todo: figure out a non noisy logging option here
 			//  as this loop will be called very frequently
 		}
 	} else {
-		if err := xdsutil.StructToMessage(filter.GetConfig(), hcm); err != nil {
+		// nolint: staticcheck
+		if err := conversion.StructToMessage(filter.GetConfig(), hcm); err != nil {
 			return
 		}
 	}
@@ -275,10 +352,10 @@ func doHTTPFilterListOperation(proxy *model.Proxy, patchContext networking.Envoy
 		if httpFilter.Name == "" {
 			continue
 		}
-		doHTTPFilterOperation(proxy, patchContext, patches, listener, fc, filter, httpFilter, &httpFiltersRemoved)
+		doHTTPFilterOperation(patchContext, patches, listener, fc, filter, httpFilter, &httpFiltersRemoved)
 	}
 	for _, cp := range patches[networking.EnvoyFilter_HTTP_FILTER] {
-		if !commonConditionMatch(proxy, patchContext, cp) ||
+		if !commonConditionMatch(patchContext, cp) ||
 			!listenerMatch(listener, cp) ||
 			!filterChainMatch(fc, cp) ||
 			!networkFilterMatch(filter, cp) {
@@ -307,10 +384,11 @@ func doHTTPFilterListOperation(proxy *model.Proxy, patchContext networking.Envoy
 				continue
 			}
 
-			hcm.HttpFilters = append(hcm.HttpFilters, proto.Clone(cp.Value).(*http_conn.HttpFilter))
+			clonedVal := proto.Clone(cp.Value).(*http_conn.HttpFilter)
+			hcm.HttpFilters = append(hcm.HttpFilters, clonedVal)
 			if insertPosition < len(hcm.HttpFilters)-1 {
 				copy(hcm.HttpFilters[insertPosition+1:], hcm.HttpFilters[insertPosition:])
-				hcm.HttpFilters[insertPosition] = proto.Clone(cp.Value).(*http_conn.HttpFilter)
+				hcm.HttpFilters[insertPosition] = clonedVal
 			}
 		} else if cp.Operation == networking.EnvoyFilter_Patch_INSERT_BEFORE {
 			// insert before without a filter match is same as insert in the beginning
@@ -323,7 +401,7 @@ func doHTTPFilterListOperation(proxy *model.Proxy, patchContext networking.Envoy
 			insertPosition := -1
 			for i := 0; i < len(hcm.HttpFilters); i++ {
 				if httpFilterMatch(hcm.HttpFilters[i], cp) {
-					insertPosition = i + 1
+					insertPosition = i
 					break
 				}
 			}
@@ -331,9 +409,11 @@ func doHTTPFilterListOperation(proxy *model.Proxy, patchContext networking.Envoy
 			if insertPosition == -1 {
 				continue
 			}
-			hcm.HttpFilters = append(hcm.HttpFilters, proto.Clone(cp.Value).(*http_conn.HttpFilter))
+
+			clonedVal := proto.Clone(cp.Value).(*http_conn.HttpFilter)
+			hcm.HttpFilters = append(hcm.HttpFilters, clonedVal)
 			copy(hcm.HttpFilters[insertPosition+1:], hcm.HttpFilters[insertPosition:])
-			hcm.HttpFilters[insertPosition] = proto.Clone(cp.Value).(*http_conn.HttpFilter)
+			hcm.HttpFilters[insertPosition] = clonedVal
 		}
 	}
 	if httpFiltersRemoved {
@@ -353,12 +433,12 @@ func doHTTPFilterListOperation(proxy *model.Proxy, patchContext networking.Envoy
 	}
 }
 
-func doHTTPFilterOperation(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func doHTTPFilterOperation(patchContext networking.EnvoyFilter_PatchContext,
 	patches map[networking.EnvoyFilter_ApplyTo][]*model.EnvoyFilterConfigPatchWrapper,
 	listener *xdsapi.Listener, fc *xdslistener.FilterChain, filter *xdslistener.Filter,
 	httpFilter *http_conn.HttpFilter, httpFilterRemoved *bool) {
 	for _, cp := range patches[networking.EnvoyFilter_HTTP_FILTER] {
-		if !commonConditionMatch(proxy, patchContext, cp) ||
+		if !commonConditionMatch(patchContext, cp) ||
 			!listenerMatch(listener, cp) ||
 			!filterChainMatch(fc, cp) ||
 			!networkFilterMatch(filter, cp) ||
@@ -371,7 +451,46 @@ func doHTTPFilterOperation(proxy *model.Proxy, patchContext networking.EnvoyFilt
 			// nothing more to do in other patches as we removed this filter
 			return
 		} else if cp.Operation == networking.EnvoyFilter_Patch_MERGE {
-			proto.Merge(httpFilter, cp.Value)
+			// proto merge doesn't work well when merging two filters with ANY typed configs
+			// especially when the incoming cp.Value is a struct that could contain the json config
+			// of an ANY typed filter. So convert our filter's typed config to Struct (retaining the any
+			// typed output of json)
+			if httpFilter.GetTypedConfig() == nil {
+				// TODO(rshriram): fixme
+				// skip this op as we would possibly have to do a merge of Any with struct
+				// which doesn't seem to work well.
+				continue
+			}
+			userHTTPFilter := cp.Value.(*http_conn.HttpFilter)
+			var err error
+			// we need to be able to overwrite filter names or simply empty out a filter's configs
+			// as they could be supplied through per route filter configs
+			httpFilterName := httpFilter.Name
+			if userHTTPFilter.Name != "" {
+				httpFilterName = userHTTPFilter.Name
+			}
+			var retVal *any.Any
+			if userHTTPFilter.GetTypedConfig() != nil {
+				// user has any typed struct
+				// The type may not match up exactly. For example, if we use v2 internally but they use v3.
+				// Assuming they are not using deprecated/new fields, we can safely swap out the TypeUrl
+				// If we did not do this, proto.Merge below will panic (which is recovered), so even though this
+				// is not 100% reliable its better than doing nothing
+				if userHTTPFilter.GetTypedConfig().TypeUrl != httpFilter.GetTypedConfig().TypeUrl {
+					userHTTPFilter.ConfigType.(*http_conn.HttpFilter_TypedConfig).TypedConfig.TypeUrl = httpFilter.GetTypedConfig().TypeUrl
+				}
+				if retVal, err = util.MergeAnyWithAny(httpFilter.GetTypedConfig(), userHTTPFilter.GetTypedConfig()); err != nil {
+					retVal = httpFilter.GetTypedConfig()
+				}
+			} else if userHTTPFilter.GetConfig() != nil { //nolint:staticcheck
+				if retVal, err = util.MergeAnyWithStruct(httpFilter.GetTypedConfig(), userHTTPFilter.GetConfig()); err != nil { //nolint:staticcheck
+					retVal = httpFilter.GetTypedConfig()
+				}
+			}
+			httpFilter.Name = httpFilterName
+			if retVal != nil {
+				httpFilter.ConfigType = &http_conn.HttpFilter_TypedConfig{TypedConfig: retVal}
+			}
 		}
 	}
 }
@@ -382,6 +501,17 @@ func listenerMatch(listener *xdsapi.Listener, cp *model.EnvoyFilterConfigPatchWr
 		return true
 	}
 
+	if cMatch.Name != "" && cMatch.Name != listener.Name {
+		return false
+	}
+
+	// skip listener port check for special virtual inbound and outbound listeners
+	// to support portNumber listener filter field within those special listeners as well
+	if cp.ApplyTo != networking.EnvoyFilter_LISTENER &&
+		(listener.Name == VirtualInboundListenerName || listener.Name == VirtualOutboundListenerName) {
+		return true
+	}
+
 	// FIXME: Ports on a listener can be 0. the API only takes uint32 for ports
 	// We should either make that field in API as a wrapper type or switch to int
 	if cMatch.PortNumber != 0 {
@@ -389,10 +519,6 @@ func listenerMatch(listener *xdsapi.Listener, cp *model.EnvoyFilterConfigPatchWr
 		if sockAddr == nil || sockAddr.GetPortValue() != cMatch.PortNumber {
 			return false
 		}
-	}
-
-	if cMatch.Name != "" && cMatch.Name != listener.Name {
-		return false
 	}
 
 	return true
@@ -430,6 +556,14 @@ func filterChainMatch(fc *xdslistener.FilterChain, cp *model.EnvoyFilterConfigPa
 			return false
 		}
 	}
+
+	// check match for destination port within the FilterChainMatch
+	if cMatch.PortNumber > 0 &&
+		fc.FilterChainMatch != nil && fc.FilterChainMatch.DestinationPort != nil &&
+		fc.FilterChainMatch.DestinationPort.Value != cMatch.PortNumber {
+		return false
+	}
+
 	return true
 }
 
@@ -481,31 +615,7 @@ func patchContextMatch(patchContext networking.EnvoyFilter_PatchContext,
 	return cp.Match.Context == patchContext || cp.Match.Context == networking.EnvoyFilter_ANY
 }
 
-func proxyMatch(proxy *model.Proxy, cp *model.EnvoyFilterConfigPatchWrapper) bool {
-	if cp.Match.Proxy == nil {
-		return true
-	}
-
-	if cp.ProxyVersionRegex != nil {
-		ver, exists := proxy.GetIstioVersion()
-		if !exists {
-			// we dont have a proxy version but the user has a regex. so this is a mismatch
-			return false
-		}
-		if !cp.ProxyVersionRegex.MatchString(ver) {
-			return false
-		}
-	}
-
-	for k, v := range cp.Match.Proxy.Metadata {
-		if proxy.Metadata[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func commonConditionMatch(proxy *model.Proxy, patchContext networking.EnvoyFilter_PatchContext,
+func commonConditionMatch(patchContext networking.EnvoyFilter_PatchContext,
 	cp *model.EnvoyFilterConfigPatchWrapper) bool {
-	return patchContextMatch(patchContext, cp) && proxyMatch(proxy, cp)
+	return patchContextMatch(patchContext, cp)
 }

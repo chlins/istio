@@ -24,6 +24,7 @@ import (
 
 	"istio.io/istio/security/pkg/caclient/protocol"
 	"istio.io/istio/security/pkg/pki/ca"
+	caerror "istio.io/istio/security/pkg/pki/error"
 	"istio.io/istio/security/pkg/pki/util"
 	"istio.io/istio/security/pkg/platform"
 	pb "istio.io/istio/security/proto"
@@ -82,11 +83,18 @@ func NewLivenessCheckController(probeCheckInterval time.Duration, caAddr string,
 	}, nil
 }
 
+// TODO(myidpt): decouple the cert generation and probing procedures.
 func (c *LivenessCheckController) checkGrpcServer() error {
 	// generates certificate and private key for test
 	opts := util.CertOptions{
 		Host:       LivenessProbeClientIdentity,
-		RSAKeySize: 2048,
+		RSAKeySize: c.rsaKeySize,
+	}
+
+	_, signingKey, _, _ := c.ca.GetCAKeyCertBundle().GetAll()
+	// TODO the user can specify algorithm to generate for CSRs independent of CA certificate
+	if util.IsSupportedECPrivateKey(signingKey) {
+		opts.ECSigAlg = util.EcdsaSigAlg
 	}
 
 	csrPEM, privPEM, err := util.GenCSR(opts)
@@ -94,9 +102,9 @@ func (c *LivenessCheckController) checkGrpcServer() error {
 		return err
 	}
 
-	certPEM, signErr := c.ca.Sign(csrPEM, []string{LivenessProbeClientIdentity}, c.interval, false)
+	certPEM, signErr := c.ca.SignWithCertChain(csrPEM, []string{LivenessProbeClientIdentity}, c.interval, false)
 	if signErr != nil {
-		return signErr.(ca.Error)
+		return signErr.(caerror.Error)
 	}
 
 	// Store certificate chain and private key to generate CSR
@@ -128,7 +136,7 @@ func (c *LivenessCheckController) checkGrpcServer() error {
 		return err
 	}
 
-	_, _, _, rootCertBytes := c.ca.GetCAKeyCertBundle().GetAll()
+	_, priv, _, rootCertBytes := c.ca.GetCAKeyCertBundle().GetAll()
 	err = ioutil.WriteFile(testRoot.Name(), rootCertBytes, 0644)
 	if err != nil {
 		return err
@@ -145,11 +153,18 @@ func (c *LivenessCheckController) checkGrpcServer() error {
 		return err
 	}
 
-	csr, privKeyBytes, err := util.GenCSR(util.CertOptions{
+	opts = util.CertOptions{
 		Host:       LivenessProbeClientIdentity,
 		Org:        c.serviceIdentityOrg,
 		RSAKeySize: c.rsaKeySize,
-	})
+	}
+
+	// TODO the user can specify algorithm to generate for CSRs independent of CA certificate
+	if util.IsSupportedECPrivateKey(priv) {
+		opts.ECSigAlg = util.EcdsaSigAlg
+	}
+
+	csr, privKeyBytes, err := util.GenCSR(opts)
 	if err != nil {
 		return err
 	}

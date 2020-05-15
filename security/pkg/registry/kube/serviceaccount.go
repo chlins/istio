@@ -15,6 +15,7 @@
 package kube
 
 import (
+	"context"
 	"reflect"
 	"time"
 
@@ -56,10 +57,10 @@ func NewServiceAccountController(core corev1.CoreV1Interface, namespaces []strin
 	LW := listwatch.MultiNamespaceListerWatcher(namespaces, func(namespace string) cache.ListerWatcher {
 		return &cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-				return core.ServiceAccounts(namespace).List(options)
+				return core.ServiceAccounts(namespace).List(context.TODO(), options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-				return core.ServiceAccounts(namespace).Watch(options)
+				return core.ServiceAccounts(namespace).Watch(context.TODO(), options)
 			},
 		}
 	})
@@ -92,7 +93,13 @@ func (c *ServiceAccountController) serviceAccountAdded(obj interface{}) {
 }
 
 func (c *ServiceAccountController) serviceAccountDeleted(obj interface{}) {
-	sa := obj.(*v1.ServiceAccount)
+	sa, ok := obj.(*v1.ServiceAccount)
+	if !ok {
+		// OnDelete can get an object of type DeletedFinalStateUnknown if it misses the delete event.
+		// Citadel should not proceed in that case
+		log.Warnf("Failed to convert to serviceaccount object: %v", obj)
+		return
+	}
 	id := getSpiffeID(sa)
 	err := c.reg.DeleteMapping(id, id)
 	if err != nil {

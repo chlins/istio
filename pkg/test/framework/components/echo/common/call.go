@@ -53,13 +53,17 @@ func CallEcho(c *client.Instance, opts *echo.CallOptions, outboundPortSelector O
 	}
 
 	// Forward a request from 'this' service to the destination service.
-	targetURL := fmt.Sprintf("%s://%s%s", string(opts.Scheme), net.JoinHostPort(opts.Host, strconv.Itoa(port)), opts.Path)
-	targetService := opts.Target.Config().Service
-
+	targetHost := net.JoinHostPort(opts.Host, strconv.Itoa(port))
+	var targetURL string
+	if opts.Scheme != scheme.TCP {
+		targetURL = fmt.Sprintf("%s://%s%s", string(opts.Scheme), targetHost, opts.Path)
+	} else {
+		targetURL = fmt.Sprintf("%s://%s", string(opts.Scheme), targetHost)
+	}
 	protoHeaders := []*proto.Header{
 		{
 			Key:   "Host",
-			Value: targetService,
+			Value: targetHost,
 		},
 	}
 	// Add headers in opts.Headers, e.g., authorization header, etc.
@@ -73,6 +77,7 @@ func CallEcho(c *client.Instance, opts *echo.CallOptions, outboundPortSelector O
 		Count:         int32(opts.Count),
 		Headers:       protoHeaders,
 		TimeoutMicros: common.DurationToMicros(opts.Timeout),
+		Message:       opts.Message,
 	}
 
 	resp, err := c.ForwardEcho(context.Background(), req)
@@ -157,10 +162,12 @@ func schemeForPort(port *echo.Port) (scheme.Instance, error) {
 	switch port.Protocol {
 	case protocol.GRPC, protocol.GRPCWeb, protocol.HTTP2:
 		return scheme.GRPC, nil
-	case protocol.HTTP, protocol.TCP:
+	case protocol.HTTP:
 		return scheme.HTTP, nil
-	case protocol.HTTPS, protocol.TLS:
+	case protocol.HTTPS:
 		return scheme.HTTPS, nil
+	case protocol.TCP:
+		return scheme.TCP, nil
 	default:
 		return "", fmt.Errorf("failed creating call for port %s: unsupported protocol %s",
 			port.Name, port.Protocol)

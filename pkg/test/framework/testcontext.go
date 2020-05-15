@@ -20,13 +20,14 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
 	"testing"
 
 	"istio.io/istio/pkg/test"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/core"
+	"istio.io/istio/pkg/test/framework/errors"
 	"istio.io/istio/pkg/test/framework/label"
 	"istio.io/istio/pkg/test/framework/resource"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/pkg/test/scopes"
 )
 
@@ -55,6 +56,7 @@ type TestContext interface {
 	RequireOrSkip(envName environment.Name)
 
 	// WhenDone runs the given function when the test context completes.
+	// This function may not (safely) access the test context.
 	WhenDone(fn func() error)
 
 	// Done should be called when this context is no longer needed. It triggers the asynchronous cleanup of any
@@ -129,7 +131,7 @@ func newTestContext(test *Test, goTest *testing.T, s *suiteContext, parentScope 
 	}
 }
 
-func (c *testContext) Settings() *core.Settings {
+func (c *testContext) Settings() *resource.Settings {
 	return c.suite.settings
 }
 
@@ -149,12 +151,13 @@ func (c *testContext) Environment() resource.Environment {
 }
 
 func (c *testContext) CreateDirectory(name string) (string, error) {
-	dir, err := ioutil.TempDir(c.workDir, name)
+	dir := filepath.Join(c.workDir, name)
+	err := os.Mkdir(dir, os.ModePerm)
 	if err != nil {
-		scopes.Framework.Errorf("Error creating temp dir: runID='%v', prefix='%s', workDir='%v', err='%v'",
+		scopes.Framework.Errorf("Error creating dir: runID='%v', prefix='%s', workDir='%v', err='%v'",
 			c.suite.settings.RunID, name, c.workDir, err)
 	} else {
-		scopes.Framework.Debugf("Created a temp dir: runID='%v', name='%s'", c.suite.settings.RunID, dir)
+		scopes.Framework.Debugf("Created a dir: runID='%v', name='%s'", c.suite.settings.RunID, dir)
 	}
 	return dir, err
 }
@@ -177,6 +180,54 @@ func (c *testContext) CreateTmpDirectory(prefix string) (string, error) {
 	}
 
 	return dir, err
+}
+
+func (c *testContext) ApplyConfig(ns string, yamlText ...string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.ApplyConfig(ns, yamlText...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *testContext) ApplyConfigOrFail(t test.Failer, ns string, yamlText ...string) {
+	for _, cc := range c.Environment().Clusters() {
+		cc.ApplyConfigOrFail(t, ns, yamlText...)
+	}
+}
+
+func (c *testContext) DeleteConfig(ns string, yamlText ...string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.DeleteConfig(ns, yamlText...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *testContext) DeleteConfigOrFail(t test.Failer, ns string, yamlText ...string) {
+	for _, cc := range c.Environment().Clusters() {
+		cc.DeleteConfigOrFail(t, ns, yamlText...)
+	}
+}
+
+func (c *testContext) ApplyConfigDir(ns string, configDir string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.ApplyConfigDir(ns, configDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *testContext) DeleteConfigDir(ns string, configDir string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.DeleteConfigDir(ns, configDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *testContext) CreateTmpDirectoryOrFail(prefix string) string {
@@ -227,6 +278,11 @@ func (c *testContext) Done() {
 	scopes.Framework.Debugf("Begin cleaning up testContext: %q", c.id)
 	if err := c.scope.done(c.suite.settings.NoCleanup); err != nil {
 		c.Logf("error scope cleanup: %v", err)
+		if c.Settings().FailOnDeprecation {
+			if errors.IsOrContainsDeprecatedError(err) {
+				c.Error("Using deprecated Envoy features. Failing due to -istio.test.deprecation_failure flag.")
+			}
+		}
 	}
 	scopes.Framework.Debugf("Completed cleaning up testContext: %q", c.id)
 }

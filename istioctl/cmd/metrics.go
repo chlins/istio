@@ -29,12 +29,14 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/spf13/cobra"
 
+	"istio.io/istio/istioctl/pkg/clioptions"
 	"istio.io/istio/istioctl/pkg/kubernetes"
 	"istio.io/pkg/log"
 )
 
 var (
-	metricsCmd = &cobra.Command{
+	metricsOpts clioptions.ControlPlaneOptions
+	metricsCmd  = &cobra.Command{
 		Use:   "metrics <workload name>...",
 		Short: "Prints the metrics for the specified workload(s) when running in Kubernetes.",
 		Long: `
@@ -59,8 +61,14 @@ istioctl experimental metrics productpage-v1
 istioctl experimental metrics productpage-v1.foo reviews-v1.bar ratings-v1.baz
 `,
 		// nolint: goimports
-		Aliases:               []string{"m"},
-		Args:                  cobra.MinimumNArgs(1),
+		Aliases: []string{"m"},
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				cmd.Println(cmd.UsageString())
+				return fmt.Errorf("metrics requires workload name")
+			}
+			return nil
+		},
 		RunE:                  run,
 		DisableFlagsInUseLine: true,
 	}
@@ -82,7 +90,7 @@ type workloadMetrics struct {
 func run(c *cobra.Command, args []string) error {
 	log.Debugf("metrics command invoked for workload(s): %v", args)
 
-	client, err := clientExecFactory(kubeconfig, configContext)
+	client, err := clientExecFactory(kubeconfig, configContext, metricsOpts)
 	if err != nil {
 		return fmt.Errorf("failed to create k8s client: %v", err)
 	}
@@ -98,7 +106,7 @@ func run(c *cobra.Command, args []string) error {
 
 	// only use the first pod in the list
 	promPod := pl.Items[0]
-	fw, err := client.BuildPortForwarder(promPod.Name, istioNamespace, 0, 9090)
+	fw, err := client.BuildPortForwarder(promPod.Name, istioNamespace, "", 0, 9090)
 	if err != nil {
 		return fmt.Errorf("could not build port forwarder for prometheus: %v", err)
 	}
@@ -196,7 +204,7 @@ func metrics(promAPI promv1.API, workload string) (workloadMetrics, error) {
 
 func vectorValue(promAPI promv1.API, query string) (float64, error) {
 	log.Debugf("executing query: %s", query)
-	val, err := promAPI.Query(context.Background(), query, time.Now())
+	val, _, err := promAPI.Query(context.Background(), query, time.Now())
 	if err != nil {
 		return 0, fmt.Errorf("query() failure for '%s': %v", query, err)
 	}

@@ -15,21 +15,32 @@
 package cmd
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"istio.io/istio/istioctl/cmd/istioctl/gendeployment"
 	"istio.io/istio/istioctl/pkg/install"
+	"istio.io/istio/istioctl/pkg/multicluster"
 	"istio.io/istio/istioctl/pkg/validate"
+	"istio.io/istio/operator/cmd/mesh"
 	"istio.io/istio/pilot/pkg/serviceregistry/kube/controller"
 	"istio.io/istio/pkg/cmd"
-	"istio.io/operator/cmd/mesh"
 	"istio.io/pkg/collateral"
 	"istio.io/pkg/log"
 )
+
+// CommandParseError distinguishes an error parsing istioctl CLI arguments from an error processing
+type CommandParseError struct {
+	e error
+}
+
+func (c CommandParseError) Error() string {
+	return c.e.Error()
+}
 
 var (
 	kubeconfig       string
@@ -38,17 +49,33 @@ var (
 	istioNamespace   string
 	defaultNamespace string
 
-	// input file name
-	file string
+	// Create a kubernetes.ExecClient (or mockExecClient) for talking to control plane components
+	clientExecFactory = newPilotExecClient
 
-	// output format (yaml or short)
-	outputFormat string
+	// Create a kubernetes.ExecClient (or mock) for talking to data plane components
+	envoyClientFactory = newEnvoyClient
 
-	// Create a kubernetes.ExecClient (or mockExecClient)
-	clientExecFactory = newExecClient
+	// Create a kubernetes.ExecClientSDS
+	clientExecSdsFactory = newSDSExecClient
 
-	loggingOptions = log.DefaultOptions()
+	loggingOptions = defaultLogOptions()
 )
+
+func defaultLogOptions() *log.Options {
+	o := log.DefaultOptions()
+
+	// These scopes are, at the default "INFO" level, too chatty for command line use
+	o.SetOutputLevel("validation", log.ErrorLevel)
+	o.SetOutputLevel("processing", log.ErrorLevel)
+	o.SetOutputLevel("source", log.ErrorLevel)
+	o.SetOutputLevel("analysis", log.WarnLevel)
+	o.SetOutputLevel("installer", log.WarnLevel)
+	o.SetOutputLevel("translator", log.WarnLevel)
+	o.SetOutputLevel("kube", log.ErrorLevel)
+	o.SetOutputLevel("default", log.WarnLevel)
+
+	return o
+}
 
 // GetRootCmd returns the root of the cobra command-tree.
 func GetRootCmd(args []string) *cobra.Command {
@@ -80,7 +107,7 @@ debug and diagnose their Istio mesh.
 	// Attach the Istio logging options to the command.
 	loggingOptions.AttachCobraFlags(rootCmd)
 	hiddenFlags := []string{"log_as_json", "log_rotate", "log_rotate_max_age", "log_rotate_max_backups",
-		"log_rotate_max_size", "log_stacktrace_level", "log_target", "log_caller"}
+		"log_rotate_max_size", "log_stacktrace_level", "log_target", "log_caller", "log_output_level"}
 	for _, opt := range hiddenFlags {
 		_ = rootCmd.PersistentFlags().MarkHidden(opt)
 	}
@@ -88,11 +115,14 @@ debug and diagnose their Istio mesh.
 	cmd.AddFlags(rootCmd)
 
 	rootCmd.AddCommand(newVersionCommand())
-	rootCmd.AddCommand(gendeployment.Command(&istioNamespace))
-	rootCmd.AddCommand(AuthN())
 	rootCmd.AddCommand(register())
 	rootCmd.AddCommand(deregisterCmd)
 	rootCmd.AddCommand(injectCommand())
+
+	postInstallCmd := &cobra.Command{
+		Use:   "post-install",
+		Short: "Commands related to post-install",
+	}
 
 	experimentalCmd := &cobra.Command{
 		Use:     "experimental",
@@ -102,17 +132,50 @@ debug and diagnose their Istio mesh.
 
 	rootCmd.AddCommand(experimentalCmd)
 	rootCmd.AddCommand(proxyConfig())
-	rootCmd.AddCommand(statusCmd)
+
+	rootCmd.AddCommand(convertIngress())
+	rootCmd.AddCommand(dashboard())
+	rootCmd.AddCommand(statusCommand())
+	rootCmd.AddCommand(Analyze())
 
 	rootCmd.AddCommand(install.NewVerifyCommand())
-	experimentalCmd.AddCommand(Auth())
-	experimentalCmd.AddCommand(convertIngress())
-	experimentalCmd.AddCommand(dashboard())
+	experimentalCmd.AddCommand(install.NewPrecheckCommand())
+	experimentalCmd.AddCommand(AuthZ())
+	rootCmd.AddCommand(seeExperimentalCmd("authz"))
+	experimentalCmd.AddCommand(graduatedCmd("convert-ingress"))
+	experimentalCmd.AddCommand(graduatedCmd("dashboard"))
 	experimentalCmd.AddCommand(uninjectCommand())
 	experimentalCmd.AddCommand(metricsCmd)
+	experimentalCmd.AddCommand(describe())
+	experimentalCmd.AddCommand(addToMeshCmd())
+	experimentalCmd.AddCommand(removeFromMeshCmd())
+	experimentalCmd.AddCommand(softGraduatedCmd(Analyze()))
+	experimentalCmd.AddCommand(vmBootstrapCommand())
+	experimentalCmd.AddCommand(waitCmd())
 
-	experimentalCmd.AddCommand(mesh.ManifestCmd())
-	experimentalCmd.AddCommand(mesh.ProfileCmd())
+	postInstallCmd.AddCommand(Webhook())
+	experimentalCmd.AddCommand(postInstallCmd)
+
+	manifestCmd := mesh.ManifestCmd(loggingOptions)
+	hideInheritedFlags(manifestCmd, "namespace", "istioNamespace")
+	rootCmd.AddCommand(manifestCmd)
+	operatorCmd := mesh.OperatorCmd()
+	rootCmd.AddCommand(operatorCmd)
+	installCmd := mesh.InstallCmd(loggingOptions)
+	hideInheritedFlags(installCmd, "namespace", "istioNamespace")
+	rootCmd.AddCommand(installCmd)
+
+	profileCmd := mesh.ProfileCmd()
+	hideInheritedFlags(profileCmd, "namespace", "istioNamespace")
+	rootCmd.AddCommand(profileCmd)
+
+	upgradeCmd := mesh.UpgradeCmd()
+	hideInheritedFlags(upgradeCmd, "namespace", "istioNamespace")
+	experimentalCmd.AddCommand(softGraduatedCmd(upgradeCmd))
+	rootCmd.AddCommand(upgradeCmd)
+
+	experimentalCmd.AddCommand(multicluster.NewCreateRemoteSecretCommand())
+	experimentalCmd.AddCommand(multicluster.NewMulticlusterCommand())
 
 	rootCmd.AddCommand(collateral.CobraCommand(rootCmd, &doc.GenManHeader{
 		Title:   "Istio Control",
@@ -120,16 +183,42 @@ debug and diagnose their Istio mesh.
 		Manual:  "Istio Control",
 	}))
 
-	// Deprecated commands
-	rootCmd.AddCommand(postCmd)
-	rootCmd.AddCommand(putCmd)
-	rootCmd.AddCommand(getCmd)
-	rootCmd.AddCommand(deleteCmd)
-	rootCmd.AddCommand(contextCmd)
-
 	rootCmd.AddCommand(validate.NewValidateCommand(&istioNamespace))
+	rootCmd.AddCommand(optionsCommand(rootCmd))
+
+	// BFS apply the flag error function to all subcommands
+	seenCommands := make(map[*cobra.Command]bool)
+	var commandStack []*cobra.Command
+
+	commandStack = append(commandStack, rootCmd)
+
+	for len(commandStack) > 0 {
+		n := len(commandStack) - 1
+		curCmd := commandStack[n]
+		commandStack = commandStack[:n]
+		seenCommands[curCmd] = true
+		for _, command := range curCmd.Commands() {
+			if !seenCommands[command] {
+				commandStack = append(commandStack, command)
+			}
+		}
+		curCmd.SetFlagErrorFunc(func(_ *cobra.Command, e error) error {
+			return CommandParseError{e}
+		})
+	}
 
 	return rootCmd
+}
+
+func hideInheritedFlags(orig *cobra.Command, hidden ...string) {
+	orig.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		for _, hidden := range hidden {
+			_ = cmd.Flags().MarkHidden(hidden) // nolint: errcheck
+		}
+
+		orig.SetHelpFunc(nil)
+		orig.HelpFunc()(cmd, args)
+	})
 }
 
 func istioPersistentPreRunE(_ *cobra.Command, _ []string) error {
@@ -155,7 +244,14 @@ func getDefaultNamespace(kubeconfig string) string {
 		return v1.NamespaceDefault
 	}
 
-	context, ok := config.Contexts[config.CurrentContext]
+	// If a specific context was specified, use that. Otherwise, just use the current context from the kube config.
+	selectedContext := config.CurrentContext
+	if configContext != "" {
+		selectedContext = configContext
+	}
+
+	// Use the namespace associated with the selected context as default, if the context has one
+	context, ok := config.Contexts[selectedContext]
 	if !ok {
 		return v1.NamespaceDefault
 	}
@@ -163,4 +259,42 @@ func getDefaultNamespace(kubeconfig string) string {
 		return v1.NamespaceDefault
 	}
 	return context.Namespace
+}
+
+// softGraduatedCmd is used for commands that have graduated, but we still want the old invocation to work.
+func softGraduatedCmd(cmd *cobra.Command) *cobra.Command {
+	msg := fmt.Sprintf("(%s has graduated. Use `istioctl %s`)", cmd.Name(), cmd.Name())
+
+	newCmd := *cmd
+	newCmd.Short = fmt.Sprintf("%s %s", cmd.Short, msg)
+	newCmd.RunE = func(c *cobra.Command, args []string) error {
+		fmt.Fprintln(cmd.ErrOrStderr(), msg)
+		return cmd.RunE(c, args)
+	}
+
+	return &newCmd
+}
+
+// graduatedCmd is used for commands that have graduated and should not work if invoked the old way.
+func graduatedCmd(name string) *cobra.Command {
+	msg := fmt.Sprintf("(%s has graduated. Use `istioctl %s`)", name, name)
+	return &cobra.Command{
+		Use:   name,
+		Short: msg,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return errors.New(msg)
+		},
+	}
+}
+
+// seeExperimentalCmd is used for commands that have been around for a release but not graduated
+func seeExperimentalCmd(name string) *cobra.Command {
+	msg := fmt.Sprintf("(%s is experimental. Use `istioctl experimental %s`)", name, name)
+	return &cobra.Command{
+		Use:   name,
+		Short: msg,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return errors.New(msg)
+		},
+	}
 }

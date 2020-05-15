@@ -18,17 +18,21 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/api"
 	v1 "k8s.io/api/core/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+
+	"istio.io/istio/istioctl/pkg/clioptions"
 	"istio.io/istio/istioctl/pkg/kubernetes"
 	"istio.io/pkg/version"
 
-	prometheus_v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	prometheus_model "github.com/prometheus/common/model"
 )
 
@@ -42,13 +46,17 @@ type mockPromAPI struct {
 	cannedResponse map[string]prometheus_model.Value
 }
 
+func mockExecClientAuthNoPilot(_, _ string, _ clioptions.ControlPlaneOptions) (kubernetes.ExecClient, error) {
+	return &mockExecConfig{}, nil
+}
+
 func TestMetricsNoPrometheus(t *testing.T) {
 	clientExecFactory = mockExecClientAuthNoPilot
 
 	cases := []testCase{
 		{ // case 0
 			args:           strings.Split("experimental metrics", " "),
-			expectedOutput: "Error: requires at least 1 arg(s), only received 0\n",
+			expectedRegexp: regexp.MustCompile("Error: metrics requires workload name\n"),
 			wantException:  true,
 		},
 		{ // case 1
@@ -70,8 +78,9 @@ func TestMetrics(t *testing.T) {
 
 	cases := []testCase{
 		{ // case 0
-			args:          strings.Split("experimental metrics details", " "),
-			wantException: true,
+			args:           strings.Split("experimental metrics details", " "),
+			expectedRegexp: regexp.MustCompile("Error: could not build port forwarder for prometheus"),
+			wantException:  true,
 		},
 	}
 
@@ -82,7 +91,7 @@ func TestMetrics(t *testing.T) {
 	}
 }
 
-func mockPortForwardClientAuthPrometheus(_, _ string) (kubernetes.ExecClient, error) {
+func mockPortForwardClientAuthPrometheus(_, _ string, _ clioptions.ControlPlaneOptions) (kubernetes.ExecClient, error) {
 	return &mockPortForwardConfig{
 		discoverablePods: map[string]map[string]*v1.PodList{
 			"istio-system": {
@@ -101,18 +110,13 @@ func mockPortForwardClientAuthPrometheus(_, _ string) (kubernetes.ExecClient, er
 }
 
 // nolint: unparam
-func (client mockPortForwardConfig) AllPilotsDiscoveryDo(pilotNamespace, method, path string, body []byte) (map[string][]byte, error) {
+func (client mockPortForwardConfig) AllPilotsDiscoveryDo(pilotNamespace, path string) (map[string][]byte, error) {
 	return nil, fmt.Errorf("mockPortForwardConfig doesn't mock Pilot discovery")
 }
 
 // nolint: unparam
 func (client mockPortForwardConfig) EnvoyDo(podName, podNamespace, method, path string, body []byte) ([]byte, error) {
 	return nil, fmt.Errorf("mockPortForwardConfig doesn't mock Envoy")
-}
-
-// nolint: unparam
-func (client mockPortForwardConfig) PilotDiscoveryDo(pilotNamespace, method, path string, body []byte) ([]byte, error) {
-	return nil, fmt.Errorf("mockPortForwardConfig doesn't mock Pilot discovery")
 }
 
 func (client mockPortForwardConfig) GetIstioVersions(namespace string) (*version.MeshInfo, error) {
@@ -131,7 +135,7 @@ func (client mockPortForwardConfig) PodsForSelector(namespace, labelSelector str
 	return podsForLabel, nil
 }
 
-func (client mockPortForwardConfig) BuildPortForwarder(podName string, ns string, localPort int, podPort int) (*kubernetes.PortForward, error) {
+func (client mockPortForwardConfig) BuildPortForwarder(podName, ns, localAddr string, localPort int, podPort int) (*kubernetes.PortForward, error) {
 	// TODO make istioctl/pkg/kubernetes/client.go use pkg/test/kube/port_forwarder.go
 	// so that the port forward can be mocked.
 	return nil, fmt.Errorf("TODO mockPortForwardConfig doesn't mock port forward")
@@ -140,6 +144,8 @@ func (client mockPortForwardConfig) BuildPortForwarder(podName string, ns string
 func TestAPI(t *testing.T) {
 	_, _ = prometheusAPI(1234)
 }
+
+var _ promv1.API = mockPromAPI{}
 
 func TestPrintMetrics(t *testing.T) {
 	mockProm := mockPromAPI{
@@ -179,54 +185,71 @@ func TestPrintMetrics(t *testing.T) {
 	}
 }
 
-func (client mockPromAPI) AlertManagers(ctx context.Context) (prometheus_v1.AlertManagersResult, error) {
-	return prometheus_v1.AlertManagersResult{}, fmt.Errorf("TODO mockPromAPI doesn't mock AlertManagers")
+func (client mockPromAPI) Alerts(ctx context.Context) (promv1.AlertsResult, error) {
+	return promv1.AlertsResult{}, fmt.Errorf("TODO mockPromAPI doesn't mock Alerts")
+}
+
+func (client mockPromAPI) AlertManagers(ctx context.Context) (promv1.AlertManagersResult, error) {
+	return promv1.AlertManagersResult{}, fmt.Errorf("TODO mockPromAPI doesn't mock AlertManagers")
 }
 
 func (client mockPromAPI) CleanTombstones(ctx context.Context) error {
 	return nil
 }
 
-func (client mockPromAPI) Config(ctx context.Context) (prometheus_v1.ConfigResult, error) {
-	return prometheus_v1.ConfigResult{}, nil
+func (client mockPromAPI) Config(ctx context.Context) (promv1.ConfigResult, error) {
+	return promv1.ConfigResult{}, nil
 }
 
 func (client mockPromAPI) DeleteSeries(ctx context.Context, matches []string, startTime time.Time, endTime time.Time) error {
 	return nil
 }
 
-func (client mockPromAPI) Flags(ctx context.Context) (prometheus_v1.FlagsResult, error) {
+func (client mockPromAPI) Flags(ctx context.Context) (promv1.FlagsResult, error) {
 	return nil, nil
 }
 
-func (client mockPromAPI) LabelValues(ctx context.Context, label string) (prometheus_model.LabelValues, error) {
-	return nil, nil
+func (client mockPromAPI) LabelValues(ctx context.Context, label string) (prometheus_model.LabelValues, api.Warnings, error) {
+	return nil, nil, nil
 }
 
-func (client mockPromAPI) Query(ctx context.Context, query string, ts time.Time) (prometheus_model.Value, error) {
+func (client mockPromAPI) Query(ctx context.Context, query string, ts time.Time) (prometheus_model.Value, api.Warnings, error) {
 	canned, ok := client.cannedResponse[query]
 	if !ok {
-		return prometheus_model.Vector{}, nil
+		return prometheus_model.Vector{}, nil, nil
 	}
-	return canned, nil
+	return canned, nil, nil
 }
 
-func (client mockPromAPI) QueryRange(ctx context.Context, query string, r prometheus_v1.Range) (prometheus_model.Value, error) {
+func (client mockPromAPI) QueryRange(ctx context.Context, query string, r promv1.Range) (prometheus_model.Value, api.Warnings, error) {
+	canned, ok := client.cannedResponse[query]
+	if !ok {
+		return prometheus_model.Vector{}, nil, nil
+	}
+	return canned, nil, nil
+}
+
+func (client mockPromAPI) Series(ctx context.Context, matches []string,
+	startTime time.Time, endTime time.Time) ([]prometheus_model.LabelSet, api.Warnings, error) {
+	return nil, nil, nil
+}
+
+func (client mockPromAPI) Snapshot(ctx context.Context, skipHead bool) (promv1.SnapshotResult, error) {
+	return promv1.SnapshotResult{}, nil
+}
+
+func (client mockPromAPI) Rules(ctx context.Context) (promv1.RulesResult, error) {
+	return promv1.RulesResult{}, nil
+}
+
+func (client mockPromAPI) Targets(ctx context.Context) (promv1.TargetsResult, error) {
+	return promv1.TargetsResult{}, nil
+}
+
+func (client mockPromAPI) LabelNames(ctx context.Context) ([]string, api.Warnings, error) {
+	return nil, nil, nil
+}
+
+func (client mockPromAPI) TargetsMetadata(ctx context.Context, matchTarget string, metric string, limit string) ([]promv1.MetricMetadata, error) {
 	return nil, nil
-}
-
-func (client mockPromAPI) Series(ctx context.Context, matches []string, startTime time.Time, endTime time.Time) ([]prometheus_model.LabelSet, error) {
-	return nil, nil
-}
-
-func (client mockPromAPI) Snapshot(ctx context.Context, skipHead bool) (prometheus_v1.SnapshotResult, error) {
-	return prometheus_v1.SnapshotResult{}, nil
-}
-
-func (client mockPromAPI) Rules(ctx context.Context) (prometheus_v1.RulesResult, error) {
-	return prometheus_v1.RulesResult{}, nil
-}
-
-func (client mockPromAPI) Targets(ctx context.Context) (prometheus_v1.TargetsResult, error) {
-	return prometheus_v1.TargetsResult{}, nil
 }
